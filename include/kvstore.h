@@ -48,7 +48,7 @@ struct KVStore {
 typedef struct KVStore KVStore;
 
 
-Entry* entry_new(const vstr *key, uint32_t type);
+Entry *entry_new(const vstr *key, uint32_t type);
 bool entry_eq(HNode *ln, HNode *rn);
 
 void kv_clear_entry(KVStore *kv, Entry *e);

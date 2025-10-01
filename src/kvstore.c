@@ -2,6 +2,7 @@
 // Created by poyehchen on 9/30/25.
 //
 #include "kvstore.h"
+#include "parse.h"
 #include "serialize.h"
 
 #include <stdint.h>
@@ -116,10 +117,10 @@ void kv_clear(KVStore *kv) {
 }
 
 // get key
-void do_get(KVStore *kv, const simple_req *req, RingBuf *out) {
+void do_get(KVStore *kv, RingBuf *out, vstr *kstr) {
     Entry key = {
-            .key = req->argv[1],
-            .node.hcode = vstr_hash(req->argv[1]),
+            .key = kstr,
+            .node.hcode = vstr_hash(kstr),
     };
 
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
@@ -137,10 +138,10 @@ void do_get(KVStore *kv, const simple_req *req, RingBuf *out) {
 }
 
 // set key val_str
-void do_set(KVStore *kv, const simple_req *req, RingBuf *out) {
+void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
     Entry key = {
-            .key = req->argv[1],
-            .node.hcode = vstr_hash(req->argv[1]),
+            .key = kstr,
+            .node.hcode = vstr_hash(kstr),
     };
 
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
@@ -150,13 +151,13 @@ void do_set(KVStore *kv, const simple_req *req, RingBuf *out) {
             out_err(out, ERR_BAD_TYP, "non string entry");
         } else {
             // Modify to return old data in response.
-            vstr_cpy(&ent->val.s, req->argv[2]);
+            vstr_cpy(&ent->val.s, vstr);
         }
     } else {
         Entry *ent = calloc(1, sizeof(Entry));
         ent->type = ENT_STR;
-        vstr_cpy(&ent->key, req->argv[1]);
-        vstr_cpy(&ent->val.s, req->argv[2]);
+        vstr_cpy(&ent->key, kstr);
+        vstr_cpy(&ent->val.s, vstr);
         ent->node.hcode = key.node.hcode;
         ent->heap_idx = (size_t) -1;
         hm_insert(&kv->store, &ent->node);
@@ -165,10 +166,10 @@ void do_set(KVStore *kv, const simple_req *req, RingBuf *out) {
 }
 
 // del key
-void do_del(KVStore *kv, const simple_req *req, RingBuf *out) {
+void do_del(KVStore *kv, RingBuf *out, vstr *kstr) {
     Entry key = {
-            .key = req->argv[1],
-            .node.hcode = vstr_hash(req->argv[1]),
+            .key = kstr,
+            .node.hcode = vstr_hash(kstr),
     };
     HNode *node = hm_delete(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -182,27 +183,22 @@ void do_del(KVStore *kv, const simple_req *req, RingBuf *out) {
 
 bool keys_cb(HNode *node, void *arg) {
     RingBuf *out = (RingBuf *) arg;
-    const vstr *key = container_of(node, Entry, node)->key;
+    vstr *key = container_of(node, Entry, node)->key;
     out_vstr(out, key);
     return true;
 }
 
 // keys
-void do_keys(KVStore *kv, const simple_req *_req, RingBuf *out) {
+void do_keys(KVStore *kv, RingBuf *out) {
     out_arr(out, (uint32_t) hm_size(&kv->store));
     hm_foreach(&kv->store, keys_cb, out);
 }
 
-// zadd key score member
-void do_zadd(KVStore *kv, const simple_req *req, RingBuf *out) {
-    double score;
-    if (!str2dbl(req->argv[2], &score)) {
-        out_err(out, ERR_BAD_ARG, "expect a float");
-        return;
-    }
+// zadd key score name
+void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *name) {
     Entry key = {
-            .key = req->argv[1],
-            .node.hcode = vstr_hash(req->argv[1]),
+            .key = kstr,
+            .node.hcode = vstr_hash(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
 
@@ -210,7 +206,7 @@ void do_zadd(KVStore *kv, const simple_req *req, RingBuf *out) {
     if (!node) {
         ent = calloc(1, sizeof(Entry));
         ent->type = ENT_ZSET;
-        vstr_cpy(&ent->key, req->argv[1]);
+        vstr_cpy(&ent->key, kstr);
         ent->node.hcode = key.node.hcode;
         ent->heap_idx = (size_t) -1;
         zset_init(&ent->val.zs);
@@ -223,16 +219,15 @@ void do_zadd(KVStore *kv, const simple_req *req, RingBuf *out) {
         }
     }
 
-    const vstr *name = req->argv[3];
     const bool added = zset_insert(&ent->val.zs, name->dat, name->len, score);
     return out_int(out, (int64_t) added);
 }
 
 // zrem key name
-void do_zrem(KVStore *kv, const simple_req *req, RingBuf *out) {
+void do_zrem(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
     Entry key = {
-            .key = req->argv[1],
-            .node.hcode = vstr_hash(req->argv[1]),
+            .key = kstr,
+            .node.hcode = vstr_hash(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -243,7 +238,7 @@ void do_zrem(KVStore *kv, const simple_req *req, RingBuf *out) {
             out_err(out, ERR_BAD_TYP, "not a zset");
             return;
         }
-        ZNode *znode = zset_lookup(&ent->val.zs, req->argv[2]->dat, req->argv[2]->len);
+        ZNode *znode = zset_lookup(&ent->val.zs, name->dat, name->len);
         if (znode) {
             zset_delete(&ent->val.zs, znode);
         }
@@ -252,10 +247,10 @@ void do_zrem(KVStore *kv, const simple_req *req, RingBuf *out) {
 }
 
 // zscore key name
-void do_zscore(KVStore *kv, const simple_req *req, RingBuf *out) {
+void do_zscore(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
     Entry key = {
-            .key = req->argv[1],
-            .node.hcode = vstr_hash(req->argv[1]),
+            .key = kstr,
+            .node.hcode = vstr_hash(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -266,7 +261,7 @@ void do_zscore(KVStore *kv, const simple_req *req, RingBuf *out) {
             out_err(out, ERR_BAD_TYP, "not a zset");
             return;
         }
-        const ZNode *znode = zset_lookup(&ent->val.zs, req->argv[2]->dat, req->argv[2]->len);
+        const ZNode *znode = zset_lookup(&ent->val.zs, name->dat, name->len);
         if (znode) {
             out_dbl(out, znode->score);
         } else {
@@ -276,22 +271,11 @@ void do_zscore(KVStore *kv, const simple_req *req, RingBuf *out) {
 }
 
 // zquery key score name offset limit
-void do_zquery(KVStore *kv, const simple_req *req, RingBuf *out) {
-    double score;
-    if (!str2dbl(req->argv[2], &score)) {
-        out_err(out, ERR_BAD_ARG, "expect fp number");
-        return;
-    }
-
-    int64_t offset = 0, limit = 0;
-    if (!str2int(req->argv[4], &offset) || !str2int(req->argv[5], &limit)) {
-        out_err(out, ERR_BAD_ARG, "expect int");
-        return;
-    }
-
+void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *name, const int64_t offset,
+               const int64_t limit) {
     Entry key = {
-            .key = req->argv[1],
-            .node.hcode = vstr_hash(req->argv[1]),
+            .key = kstr,
+            .node.hcode = vstr_hash(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -309,7 +293,7 @@ void do_zquery(KVStore *kv, const simple_req *req, RingBuf *out) {
         out_arr(out, 0);
         return;
     }
-    ZNode *znode = zset_seekge(&ent->val.zs, score, req->argv[3]->dat, req->argv[3]->len);
+    ZNode *znode = zset_seekge(&ent->val.zs, score, name->dat, name->len);
     znode = znode_offset(&ent->val.zs, znode, offset);
 
     RingBuf buf;
@@ -329,10 +313,10 @@ void do_zquery(KVStore *kv, const simple_req *req, RingBuf *out) {
 }
 
 // pttl key
-void do_ttl(KVStore *kv, const simple_req *req, RingBuf *out) {
+void do_pttl(KVStore *kv, RingBuf *out, vstr *kstr) {
     Entry key = {
-            .key = req->argv[1],
-            .node.hcode = vstr_hash(req->argv[1]),
+            .key = kstr,
+            .node.hcode = vstr_hash(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -352,16 +336,10 @@ void do_ttl(KVStore *kv, const simple_req *req, RingBuf *out) {
 }
 
 // pexpire key ttl
-void do_expire(KVStore *kv, const simple_req *req, RingBuf *out) {
-    int64_t ttl = 0;
-    if (!str2int(req->argv[2], &ttl)) {
-        out_err(out, ERR_BAD_ARG, "expect i64");
-        return;
-    }
-
+void do_pexpire(KVStore *kv, RingBuf *out, vstr *kstr, int64_t ttl) {
     Entry key = {
-            .key = req->argv[1],
-            .node.hcode = vstr_hash(req->argv[1]),
+            .key = kstr,
+            .node.hcode = vstr_hash(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (node) {
@@ -371,28 +349,34 @@ void do_expire(KVStore *kv, const simple_req *req, RingBuf *out) {
     out_int(out, node ? 1 : 0);
 }
 
-void do_req(KVStore *kv, const simple_req *req, RingBuf *out) {
-    if (req->argc == 2 && !strncmp("get", req->argv[0]->dat, 3)) {
-        do_get(kv, req, out);
-    } else if (req->argc == 3 && !strncmp("set", req->argv[0]->dat, 3)) {
-        do_set(kv, req, out);
-    } else if (req->argc == 2 && !strncmp("del", req->argv[0]->dat, 3)) {
-        do_del(kv, req, out);
-    } else if (req->argc == 1 && !strncmp("keys", req->argv[0]->dat, 4)) {
-        do_keys(kv, req, out);
-    } else if (req->argc == 4 && !strncmp("zadd", req->argv[0]->dat, 4)) {
-        do_zadd(kv, req, out);
-    } else if (req->argc == 3 && !strncmp("zrem", req->argv[0]->dat, 4)) {
-        do_zrem(kv, req, out);
-    } else if (req->argc == 3 && !strncmp("zscore", req->argv[0]->dat, 6)) {
-        do_zscore(kv, req, out);
-    } else if (req->argc == 6 && !strncmp("zquery", req->argv[0]->dat, 6)) {
-        do_zquery(kv, req, out);
-    } else if (req->argc == 2 && !strncmp("pttl", req->argv[0]->dat, 4)) {
-        do_ttl(kv, req, out);
-    } else if (req->argc == 3 && !strncmp("pexpire", req->argv[0]->dat, 7)) {
-        do_expire(kv, req, out);
-    } else {
-        out_err(out, ERR_UNKNOWN, "unknown command");
+void do_req(KVStore *kv, const simple_req *sreq, RingBuf *out) {
+    Request req;
+    simple2req(sreq, &req);
+    switch (req.type) {
+        case CMD_GET:
+            return do_get(kv, out, req.key);
+        case CMD_SET:
+            return do_set(kv, out, req.key, req.args.val);
+        case CMD_DEL:
+            return do_del(kv, out, req.key);
+        case CMD_KEYS:
+            return do_keys(kv, out);
+        case CMD_ZADD:
+            return do_zadd(kv, out, req.key, req.args.zadd_arg.score, req.args.zadd_arg.name);
+        case CMD_ZREM:
+            return do_zrem(kv, out, req.key, req.args.val);
+        case CMD_ZSCORE:
+            return do_zscore(kv, out, req.key, req.args.val);
+        case CMD_ZQUERY:
+            return do_zquery(kv, out, req.key, req.args.zquery_arg.score, req.args.zquery_arg.name,
+                             req.args.zquery_arg.offset, req.args.zquery_arg.limit);
+        case CMD_PTTL:
+            return do_pttl(kv, out, req.key);
+        case CMD_PEXPIRE:
+            return do_pexpire(kv, out, req.key, req.args.ttl);
+        case CMD_BAD:
+            return out_err(out, ERR_BAD_ARG, req.args.err);
+        case CMD_UNKNOWN:
+            return out_err(out, ERR_UNKNOWN, "unknown command");
     }
 }
