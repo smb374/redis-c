@@ -1,0 +1,55 @@
+#ifndef HASHTABLE_H
+#define HASHTABLE_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define REHASH_WORK 128
+#define MAX_LOAD 8
+#define DEFAULT_TABLE_SIZE 32
+
+
+struct HNode {
+    struct HNode* next;
+    uint64_t hcode;
+};
+typedef struct HNode HNode;
+
+struct HTable {
+    HNode** tab;
+    size_t mask;
+    size_t size;
+};
+typedef struct HTable HTable;
+
+struct HTVisitor {
+    const HTable* ht;
+    size_t slot_pos;
+    HNode* chain_pos;
+};
+typedef struct HTVisitor HTVisitor;
+
+struct HMap {
+    HTable newer, older; // progressive rehashing
+    size_t migrate_pos;
+};
+typedef struct HMap HMap;
+
+HNode* hm_lookup(HMap* hm, HNode* key, bool (*eq)(HNode*, HNode*));
+void hm_insert(HMap* hm, HNode* node);
+HNode* hm_delete(HMap* hm, HNode* key, bool (*eq)(HNode*, HNode*));
+void hm_clear(HMap* hm);
+size_t hm_size(const HMap* hm);
+void hm_create_visitor(const HMap* hm, HTVisitor* vis);
+HNode* hm_visit_next(const HMap* hm, HTVisitor* vis);
+void hm_foreach(const HMap* hm, bool (*f)(HNode*, void*), void* arg);
+
+#ifdef __cplusplus
+}
+#endif
+#endif
