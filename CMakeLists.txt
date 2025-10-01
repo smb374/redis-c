@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(build_your_own_redis)
+project(redis-c)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
