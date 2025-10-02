@@ -15,24 +15,17 @@ extern "C" {
 
 
 struct HNode {
-    struct HNode* next;
+    struct HNode *next;
     uint64_t hcode;
 };
 typedef struct HNode HNode;
 
 struct HTable {
-    HNode** tab;
+    HNode **tab;
     size_t mask;
     size_t size;
 };
 typedef struct HTable HTable;
-
-struct HTVisitor {
-    const HTable* ht;
-    size_t slot_pos;
-    HNode* chain_pos;
-};
-typedef struct HTVisitor HTVisitor;
 
 struct HMap {
     HTable newer, older; // progressive rehashing
@@ -40,14 +33,12 @@ struct HMap {
 };
 typedef struct HMap HMap;
 
-HNode* hm_lookup(HMap* hm, HNode* key, bool (*eq)(HNode*, HNode*));
-void hm_insert(HMap* hm, HNode* node);
-HNode* hm_delete(HMap* hm, HNode* key, bool (*eq)(HNode*, HNode*));
-void hm_clear(HMap* hm);
-size_t hm_size(const HMap* hm);
-void hm_create_visitor(const HMap* hm, HTVisitor* vis);
-HNode* hm_visit_next(const HMap* hm, HTVisitor* vis);
-void hm_foreach(const HMap* hm, bool (*f)(HNode*, void*), void* arg);
+HNode *hm_lookup(HMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
+void hm_insert(HMap *hm, HNode *node);
+HNode *hm_delete(HMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
+void hm_clear(HMap *hm);
+size_t hm_size(const HMap *hm);
+void hm_foreach(const HMap *hm, bool (*f)(HNode *, void *), void *arg);
 
 #ifdef __cplusplus
 }

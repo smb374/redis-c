@@ -16,7 +16,7 @@ ZNode *znode_new(const char *name, const size_t len, const double score) {
     ZNode *node = calloc(1, sizeof(ZNode) + len);
     node->tnode.level = 1;
     node->hnode.next = NULL;
-    node->hnode.hcode = bytes_hash((const uint8_t *) name, len);
+    node->hnode.hcode = bytes_hash_rapid((const uint8_t *) name, len);
     node->score = score;
     node->len = len;
     memcpy(node->name, name, len);
@@ -105,7 +105,7 @@ void zset_delete(ZSet *zset, ZNode *node) {
     ZHKey zkey = {
             .len = node->len,
             .name = node->name,
-            .node.hcode = bytes_hash((const uint8_t *) node->name, node->len),
+            .node.hcode = bytes_hash_rapid((const uint8_t *) node->name, node->len),
     };
 
     const HNode *found = hm_lookup(&zset->hm, &zkey.node, zhkey_cmp);
@@ -122,7 +122,7 @@ ZNode *zset_lookup(ZSet *zset, const char *name, const size_t len) {
     ZHKey zkey = {
             .len = len,
             .name = name,
-            .node.hcode = bytes_hash((const uint8_t *) name, len),
+            .node.hcode = bytes_hash_rapid((const uint8_t *) name, len),
     };
     HNode *found = hm_lookup(&zset->hm, &zkey.node, zhkey_cmp);
     return found ? container_of(found, ZNode, hnode) : NULL;

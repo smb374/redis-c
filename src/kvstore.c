@@ -16,7 +16,7 @@ Entry *entry_new(const vstr *key, const uint32_t type) {
     e->type = type;
     if (key) {
         vstr_cpy(&e->key, key);
-        e->node.hcode = vstr_hash(e->key);
+        e->node.hcode = vstr_hash_rapid(e->key);
     }
     return e;
 }
@@ -120,7 +120,7 @@ void kv_clear(KVStore *kv) {
 void do_get(KVStore *kv, RingBuf *out, vstr *kstr) {
     Entry key = {
             .key = kstr,
-            .node.hcode = vstr_hash(kstr),
+            .node.hcode = vstr_hash_rapid(kstr),
     };
 
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
@@ -141,7 +141,7 @@ void do_get(KVStore *kv, RingBuf *out, vstr *kstr) {
 void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
     Entry key = {
             .key = kstr,
-            .node.hcode = vstr_hash(kstr),
+            .node.hcode = vstr_hash_rapid(kstr),
     };
 
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
@@ -169,7 +169,7 @@ void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
 void do_del(KVStore *kv, RingBuf *out, vstr *kstr) {
     Entry key = {
             .key = kstr,
-            .node.hcode = vstr_hash(kstr),
+            .node.hcode = vstr_hash_rapid(kstr),
     };
     HNode *node = hm_delete(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -198,7 +198,7 @@ void do_keys(KVStore *kv, RingBuf *out) {
 void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *name) {
     Entry key = {
             .key = kstr,
-            .node.hcode = vstr_hash(kstr),
+            .node.hcode = vstr_hash_rapid(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
 
@@ -227,7 +227,7 @@ void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *na
 void do_zrem(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
     Entry key = {
             .key = kstr,
-            .node.hcode = vstr_hash(kstr),
+            .node.hcode = vstr_hash_rapid(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -250,7 +250,7 @@ void do_zrem(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
 void do_zscore(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
     Entry key = {
             .key = kstr,
-            .node.hcode = vstr_hash(kstr),
+            .node.hcode = vstr_hash_rapid(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -275,7 +275,7 @@ void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *
                const int64_t limit) {
     Entry key = {
             .key = kstr,
-            .node.hcode = vstr_hash(kstr),
+            .node.hcode = vstr_hash_rapid(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -316,7 +316,7 @@ void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *
 void do_pttl(KVStore *kv, RingBuf *out, vstr *kstr) {
     Entry key = {
             .key = kstr,
-            .node.hcode = vstr_hash(kstr),
+            .node.hcode = vstr_hash_rapid(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
@@ -339,7 +339,7 @@ void do_pttl(KVStore *kv, RingBuf *out, vstr *kstr) {
 void do_pexpire(KVStore *kv, RingBuf *out, vstr *kstr, int64_t ttl) {
     Entry key = {
             .key = kstr,
-            .node.hcode = vstr_hash(kstr),
+            .node.hcode = vstr_hash_rapid(kstr),
     };
     HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
     if (node) {

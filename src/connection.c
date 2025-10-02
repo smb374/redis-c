@@ -30,7 +30,7 @@ void conn_init(Conn *conn, const int fd) {
     rb_init(&conn->outgo, INIT_BUFFER_SIZE);
     conn->flags = 0;
     conn->last_active = get_clock_ms();
-    conn->pool_node.hcode = int_hash((uint64_t) fd);
+    conn->pool_node.hcode = int_hash_rapid((uint64_t) fd);
     dlist_init(&conn->list_node);
 }
 
@@ -193,7 +193,7 @@ ConnState handle_accept(ConnManager *cm, const int epfd, const int srv_fd) {
 Conn *cm_get_conn(ConnManager *cm, const int fd) {
     Conn key;
     key.fd = fd;
-    key.pool_node.hcode = int_hash((uint64_t) fd);
+    key.pool_node.hcode = int_hash_rapid((uint64_t) fd);
 
     HNode *entry = hm_lookup(&cm->pool, &key.pool_node, conn_eq);
     return entry ? container_of(entry, Conn, pool_node) : NULL;
