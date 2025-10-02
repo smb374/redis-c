@@ -29,6 +29,7 @@ add_library(common_lib STATIC
         src/heap.c
         src/kvstore.c
         src/cqueue.c
+        src/thread_pool.c
 )
 target_include_directories(common_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -78,4 +79,7 @@ add_test(NAME kvstore_test COMMAND kvstore_test)
 add_executable(cqueue_test tests/cqueue_test.cpp)
 target_link_libraries(cqueue_test PRIVATE common_lib gtest_main pthread)
 add_test(NAME cqueue_test COMMAND cqueue_test)
-
+## thread_pool_test
+add_executable(thread_pool_test tests/thread_pool_test.cpp)
+target_link_libraries(thread_pool_test PRIVATE common_lib gtest_main pthread atomic)
+add_test(NAME thread_pool_test COMMAND thread_pool_test)
