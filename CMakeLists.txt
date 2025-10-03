@@ -15,6 +15,13 @@ FetchContent_Declare(
 )
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
+# Google Benchmark
+FetchContent_Declare(
+        googlebenchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG        v1.8.0
+)
+FetchContent_MakeAvailable(googlebenchmark)
 
 # Bundle all files into a lib except for executable files.
 add_library(common_lib STATIC
@@ -89,3 +96,9 @@ target_link_libraries(chashmap_test PRIVATE common_lib gtest_main pthread atomic
 # target_compile_options(chashmap_test PRIVATE -fsanitize=thread)
 # target_link_options(chashmap_test PRIVATE -fsanitize=thread)
 add_test(NAME chashmap_test COMMAND chashmap_test)
+
+# Benchmarks
+## chashmap_bench
+add_executable(chashmap_bench bench/chashmap_bench.cpp)
+target_link_libraries(chashmap_bench PRIVATE common_lib benchmark::benchmark pthread atomic)
+

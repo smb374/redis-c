@@ -155,7 +155,7 @@ void cht_insert(CHTable *ht, HNode *node, atomic_size_t *gsize) {
 }
 
 HNode **cht_lookup(const CHTable *ht, HNode *key, bool (*eq)(HNode *, HNode *)) {
-    if (!ht->tab)
+    if (!ht->tab || !ht->mask || !ht->size)
         return NULL;
 
     const size_t pos = key->hcode & ht->mask;
