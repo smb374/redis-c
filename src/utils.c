@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <rapidhash.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -117,4 +118,3 @@ uint64_t get_clock_ms() {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
 }
-

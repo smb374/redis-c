@@ -83,3 +83,7 @@ add_test(NAME cqueue_test COMMAND cqueue_test)
 add_executable(thread_pool_test tests/thread_pool_test.cpp)
 target_link_libraries(thread_pool_test PRIVATE common_lib gtest_main pthread atomic)
 add_test(NAME thread_pool_test COMMAND thread_pool_test)
+## chashmap_test
+add_executable(chashmap_test tests/chashmap_test.cpp)
+target_link_libraries(chashmap_test PRIVATE common_lib gtest_main pthread atomic)
+add_test(NAME chashmap_test COMMAND chashmap_test)

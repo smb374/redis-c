@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #define container_of(ptr, T, member) ((T *) ((char *) (ptr) - offsetof(T, member)))
