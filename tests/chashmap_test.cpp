@@ -155,7 +155,7 @@ TEST_F(CHashMapTest, MultiThreadedConcurrentInsert) {
 
 TEST_F(CHashMapTest, MultiThreadedConcurrentInsertDelete) {
     const int num_threads = 8;
-    const int items_per_thread = 10000;
+    const int items_per_thread = 20000;
     std::vector<std::thread> threads;
     std::atomic<int> success_deletes(0);
 

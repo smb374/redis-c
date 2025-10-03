@@ -96,7 +96,7 @@ HNode *hm_lookup(HMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
 
 void hm_insert(HMap *hm, HNode *node) {
     if (!hm->newer.tab) {
-        ht_init(&hm->newer, 16); // initialize it if empty
+        ht_init(&hm->newer, DEFAULT_TABLE_SIZE); // initialize it if empty
     }
     ht_insert(&hm->newer, node); // always insert to the newer table
 
@@ -176,34 +176,37 @@ HNode *cht_detach(CHTable *ht, HNode **from, atomic_size_t *gsize) {
 }
 
 void chm_help_rehashing(CHMap *hm) {
-    pthread_mutex_lock(&hm->st_lock);
+    // We don't need to manipulate hm->size here as the migration itself doesn't
+    // change the number of entries in the table.
+
     // Create lists to distribute the current chain to BUCKET_LOCKS chain
     // such that we can insert the same chain in the list with 1 mutex lock
     // in current iteration.
-    HNode hlist[BUCKET_LOCKS], *clist[BUCKET_LOCKS], *cur;
-    for (int i = 0; i < BUCKET_LOCKS; i++) {
-        clist[i] = &hlist[i];
-    }
-    size_t nwork = 0;
+    HNode *clist[BUCKET_LOCKS], *cur;
+    bzero(clist, sizeof(HNode *) * BUCKET_LOCKS);
+    size_t nwork = 0, cnt = 0;
     size_t older_size = atomic_load_explicit(&hm->older.size, memory_order_acquire);
-
+    if (!older_size)
+        return;
     while (nwork < REHASH_WORK && older_size > 0) {
+        pthread_mutex_lock(&hm->st_lock);
         size_t bidx = hm->migrate_pos;
-
         if (bidx > hm->older.mask) {
+            pthread_mutex_unlock(&hm->st_lock);
             break;
         }
+        hm->migrate_pos++;
         const size_t olidx = bidx % BUCKET_LOCKS;
         pthread_mutex_lock(&hm->ob_lock[olidx]);
         cur = hm->older.tab[bidx];
         hm->older.tab[bidx] = NULL;
         pthread_mutex_unlock(&hm->ob_lock[olidx]);
+        pthread_mutex_unlock(&hm->st_lock);
         if (!cur) {
-            hm->migrate_pos++;
             older_size = atomic_load_explicit(&hm->older.size, memory_order_acquire);
             continue;
         }
-        size_t cnt = 0;
+        cnt = 0;
         while (cur) {
             HNode *next = cur->next;
             const size_t nlidx = cur->hcode % BUCKET_LOCKS;
@@ -212,50 +215,42 @@ void chm_help_rehashing(CHMap *hm) {
             cur = next;
 
             cnt++;
-            nwork++;
         }
+        nwork += cnt;
         atomic_fetch_sub_explicit(&hm->older.size, cnt, memory_order_acq_rel);
-        cnt = 0;
-        for (int i = 0; i < BUCKET_LOCKS; i++) {
-            if (clist[i] == &hlist[i])
-                continue;
-            pthread_mutex_lock(&hm->nb_lock[i]);
-            while (clist[i] != &hlist[i]) {
-                const size_t pos = clist[i]->hcode & hm->newer.mask;
-                HNode *cnext = clist[i]->next;
-                HNode *next = hm->newer.tab[pos];
-                clist[i]->next = next;
-                hm->newer.tab[pos] = clist[i];
-                clist[i] = cnext;
-                cnt++;
-            }
-            pthread_mutex_unlock(&hm->nb_lock[i]);
-        }
-        atomic_fetch_add_explicit(&hm->newer.size, cnt, memory_order_acq_rel);
-        hm->migrate_pos++;
         older_size = atomic_load_explicit(&hm->older.size, memory_order_acquire);
     }
 
-    if (older_size == 0 && hm->older.tab) {
-        if (hm->older.tab) {
-            free(hm->older.tab);
-            bzero(&hm->older, sizeof(CHTable));
-        }
+    pthread_mutex_lock(&hm->st_lock);
+    if (!older_size && hm->older.tab) {
+        free(hm->older.tab);
+        hm->older.tab = NULL;
+        hm->older.mask = 0;
     }
     pthread_mutex_unlock(&hm->st_lock);
+    cnt = 0;
+    for (int i = 0; i < BUCKET_LOCKS && nwork > 0; i++) {
+        if (!clist[i])
+            continue;
+        pthread_mutex_lock(&hm->nb_lock[i]);
+        while (clist[i]) {
+            const size_t pos = clist[i]->hcode & hm->newer.mask;
+            HNode *cnext = clist[i]->next;
+            HNode *next = hm->newer.tab[pos];
+            clist[i]->next = next;
+            hm->newer.tab[pos] = clist[i];
+            clist[i] = cnext;
+            cnt++;
+        }
+        pthread_mutex_unlock(&hm->nb_lock[i]);
+    }
+    atomic_fetch_add_explicit(&hm->newer.size, cnt, memory_order_acq_rel);
 }
 
 void chm_trigger_rehashing(CHMap *hm) {
-    pthread_mutex_lock(&hm->st_lock);
-    if (hm->older.tab) {
-        pthread_mutex_unlock(&hm->st_lock);
-        return;
-    }
-
     hm->older = hm->newer;
     cht_init(&hm->newer, (hm->newer.mask + 1) << 1);
     hm->migrate_pos = 0;
-    pthread_mutex_unlock(&hm->st_lock);
 }
 
 bool cht_foreach(CHTable *ht, pthread_mutex_t *locks, bool (*f)(HNode *, void *), void *arg) {
@@ -301,29 +296,24 @@ HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
 }
 
 void chm_insert(CHMap *hm, HNode *node) {
-    pthread_mutex_lock(&hm->st_lock);
-    if (!hm->newer.tab) {
-        cht_init(&hm->newer, 16); // initialize it if empty
-    }
-
-    bool to_rehash = false;
-    if (!hm->older.tab) {
-        // check whether we need to rehash
-        size_t new_size = atomic_load_explicit(&hm->newer.size, memory_order_acquire);
-        const size_t threshold = (hm->newer.mask + 1) * MAX_LOAD;
-        if (new_size >= threshold) {
-            to_rehash = true;
-        }
-    }
-    pthread_mutex_unlock(&hm->st_lock);
-
     const size_t nlidx = node->hcode % BUCKET_LOCKS;
     pthread_mutex_lock(&hm->nb_lock[nlidx]);
     cht_insert(&hm->newer, node, &hm->size); // always insert to the newer table
     pthread_mutex_unlock(&hm->nb_lock[nlidx]);
 
-    if (to_rehash)
-        chm_trigger_rehashing(hm);
+    size_t old_size = atomic_load_explicit(&hm->older.size, memory_order_acquire);
+    if (!old_size) {
+        pthread_mutex_lock(&hm->st_lock);
+        if (!hm->older.tab) {
+            // check whether we need to rehash
+            size_t new_size = atomic_load_explicit(&hm->newer.size, memory_order_acquire);
+            const size_t threshold = (hm->newer.mask + 1) * MAX_LOAD;
+            if (new_size >= threshold) {
+                chm_trigger_rehashing(hm);
+            }
+        }
+        pthread_mutex_unlock(&hm->st_lock);
+    }
 
     chm_help_rehashing(hm); // migrate some keys
 }
@@ -362,6 +352,7 @@ CHMap *chm_new(CHMap *hm) {
     }
 
     hm->size = ATOMIC_VAR_INIT(0);
+    cht_init(&hm->newer, DEFAULT_TABLE_SIZE);
 
     pthread_mutex_init(&hm->st_lock, NULL);
     for (int i = 0; i < BUCKET_LOCKS; i++) {

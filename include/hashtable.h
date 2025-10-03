@@ -14,8 +14,8 @@ extern "C" {
 
 #define REHASH_WORK 128
 #define MAX_LOAD 8
-#define DEFAULT_TABLE_SIZE 32
-#define BUCKET_LOCKS 16
+#define DEFAULT_TABLE_SIZE 128
+#define BUCKET_LOCKS 128
 
 struct HNode {
     struct HNode *next;
@@ -49,8 +49,8 @@ struct CHTable {
 };
 struct CHMap {
     struct CHTable newer, older;
-    size_t migrate_pos;
     bool is_alloc;
+    size_t migrate_pos;
     alignas(64) atomic_size_t size; // Use atomic so we don't need a lock for it.
     pthread_mutex_t st_lock;
     pthread_mutex_t nb_lock[BUCKET_LOCKS];
