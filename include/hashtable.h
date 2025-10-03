@@ -50,7 +50,7 @@ struct CHTable {
 struct CHMap {
     struct CHTable newer, older;
     bool is_alloc;
-    size_t migrate_pos;
+    alignas(64) atomic_size_t migrate_pos;
     alignas(64) atomic_size_t size; // Use atomic so we don't need a lock for it.
     pthread_mutex_t st_lock;
     pthread_mutex_t nb_lock[BUCKET_LOCKS];

@@ -86,4 +86,6 @@ add_test(NAME thread_pool_test COMMAND thread_pool_test)
 ## chashmap_test
 add_executable(chashmap_test tests/chashmap_test.cpp)
 target_link_libraries(chashmap_test PRIVATE common_lib gtest_main pthread atomic)
+# target_compile_options(chashmap_test PRIVATE -fsanitize=thread)
+# target_link_options(chashmap_test PRIVATE -fsanitize=thread)
 add_test(NAME chashmap_test COMMAND chashmap_test)
