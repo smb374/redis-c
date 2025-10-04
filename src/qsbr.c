@@ -28,7 +28,23 @@ qsbr *qsbr_init(qsbr *gc, size_t back_logs) {
     pthread_mutex_init(&gc->lock, NULL);
     return gc;
 }
+// NOTE: Assumes exclusive access on destroy
 void qsbr_destroy(qsbr *gc) {
+    cnode *node;
+    while ((node = cq_pop(gc->prev))) {
+        qsbr_cb *cb = container_of(node, qsbr_cb, qnode);
+        cb->f(cb->arg);
+        if (cb->internal) {
+            free(cb);
+        }
+    }
+    while ((node = cq_pop(gc->curr))) {
+        qsbr_cb *cb = container_of(node, qsbr_cb, qnode);
+        cb->f(cb->arg);
+        if (cb->internal) {
+            free(cb);
+        }
+    }
     cq_destroy(gc->curr);
     cq_destroy(gc->prev);
     if (gc->is_alloc) {

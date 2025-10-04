@@ -1,4 +1,5 @@
 #include "hashtable.h"
+#include "qsbr.h"
 #include "utils.h"
 
 #include <assert.h>
@@ -9,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+static __thread qsbr_tid hm_tid = -1;
 
 // Internal Functions
 void ht_init(HTable *ht, size_t n) {
@@ -281,7 +284,7 @@ void chm_help_rehashing(CHMap *hm) {
         spin_rw_wlock(&hm->st_lock);
         older_size = atomic_load_explicit(&hm->older.size, memory_order_acquire);
         if (!older_size && hm->older.tab) {
-            free(hm->older.tab);
+            qsbr_alloc_cb(&hm->gc, free, hm->older.tab);
             hm->older.tab = NULL;
             hm->older.mask = 0;
         }
@@ -340,6 +343,7 @@ HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
     spin_rw_runlock(&hm->st_lock);
 
     chm_help_rehashing(hm);
+    qsbr_quiescent(&hm->gc, hm_tid);
     return result;
 }
 
@@ -400,6 +404,7 @@ bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *)) {
     }
 
     chm_help_rehashing(hm); // migrate some keys
+    qsbr_quiescent(&hm->gc, hm_tid);
     return result;
 }
 
@@ -439,6 +444,7 @@ void chm_insert_unchecked(CHMap *hm, HNode *node) {
     }
 
     chm_help_rehashing(hm); // migrate some keys
+    qsbr_quiescent(&hm->gc, hm_tid);
 }
 
 HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
@@ -467,6 +473,7 @@ HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
     spin_rw_runlock(&hm->st_lock);
 
     chm_help_rehashing(hm);
+    qsbr_quiescent(&hm->gc, hm_tid);
     return result;
 }
 
@@ -478,8 +485,9 @@ CHMap *chm_new(CHMap *hm) {
         hm->is_alloc = false;
     }
 
-    hm->size = ATOMIC_VAR_INIT(0);
+    atomic_init(&hm->size, 0);
     cht_init(&hm->newer, DEFAULT_TABLE_SIZE);
+    qsbr_init(&hm->gc, 4096);
 
     spin_rw_init(&hm->st_lock);
     for (int i = 0; i < BUCKET_LOCKS; i++) {
@@ -489,9 +497,21 @@ CHMap *chm_new(CHMap *hm) {
 
     return hm;
 }
+
+void chm_register(CHMap *hm) {
+    if (hm_tid == -1) {
+        hm_tid = qsbr_reg(&hm->gc);
+        if (hm_tid == -1) {
+            msg("Too many threads");
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
 void chm_clear(CHMap *hm) {
     free(hm->newer.tab);
     free(hm->older.tab);
+    qsbr_destroy(&hm->gc);
     for (int i = 0; i < BUCKET_LOCKS; i++) {
         pthread_mutex_destroy(&hm->nb_lock[i]);
         pthread_mutex_destroy(&hm->ob_lock[i]);

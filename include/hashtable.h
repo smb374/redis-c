@@ -1,8 +1,6 @@
 #ifndef HASHTABLE_H
 #define HASHTABLE_H
 
-#include <stdatomic.h>
-#include "utils.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -12,6 +10,9 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "qsbr.h"
+#include "utils.h"
 
 #define REHASH_WORK 64
 #define MAX_LOAD 8
@@ -43,6 +44,7 @@ typedef struct CHTable CHTable;
 typedef struct CHMap CHMap;
 
 #ifndef __cplusplus
+#include <stdatomic.h>
 struct CHTable {
     HNode **tab;
     size_t mask;
@@ -51,6 +53,7 @@ struct CHTable {
 struct CHMap {
     struct CHTable newer, older;
     bool is_alloc;
+    qsbr gc;
     alignas(64) atomic_size_t migrate_pos;
     alignas(64) atomic_size_t size; // Use atomic so we don't need a lock for it.
     // alignas(64) pthread_rwlock_t st_lock;
@@ -69,6 +72,7 @@ size_t hm_size(const HMap *hm);
 void hm_foreach(const HMap *hm, bool (*f)(HNode *, void *), void *arg);
 
 CHMap *chm_new(CHMap *hm);
+void chm_register(CHMap *hm);
 HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
 bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *));
 void chm_insert_unchecked(CHMap *hm, HNode *node);
