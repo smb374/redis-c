@@ -71,9 +71,9 @@ static void BM_Insert(benchmark::State &state) {
         entry->value = key * 2;
         entry->node.hcode = int_hash_rapid(key);
 
-        HNode *old = chm_insert(g_chmap, &entry->node, test_entry_eq);
+        bool success = chm_insert(g_chmap, &entry->node, test_entry_eq);
         // Should always be NULL (new insert) since keys are unique
-        benchmark::DoNotOptimize(old);
+        benchmark::DoNotOptimize(success);
     }
 
     state.SetItemsProcessed(state.iterations());
@@ -177,8 +177,8 @@ static void BM_Mixed_80Read_20Write(benchmark::State &state) {
             entry->key = key;
             entry->value = key * 2;
             entry->node.hcode = int_hash_rapid(key);
-            HNode *old = chm_insert(g_chmap, &entry->node, test_entry_eq);
-            benchmark::DoNotOptimize(old);
+            bool success = chm_insert(g_chmap, &entry->node, test_entry_eq);
+            benchmark::DoNotOptimize(success);
         }
     }
 
@@ -220,8 +220,8 @@ static void BM_Mixed_50Read_50Write(benchmark::State &state) {
             entry->key = key;
             entry->value = key * 2;
             entry->node.hcode = int_hash_rapid(key);
-            HNode *old = chm_insert(g_chmap, &entry->node, test_entry_eq);
-            benchmark::DoNotOptimize(old);
+            bool success = chm_insert(g_chmap, &entry->node, test_entry_eq);
+            benchmark::DoNotOptimize(success);
         }
     }
 
@@ -280,8 +280,8 @@ static void BM_Mixed_CRUD(benchmark::State &state) {
             entry->key = insert_key;
             entry->value = insert_key * 2;
             entry->node.hcode = int_hash_rapid(insert_key);
-            HNode *old = chm_insert(g_chmap, &entry->node, test_entry_eq);
-            benchmark::DoNotOptimize(old);
+            bool success = chm_insert(g_chmap, &entry->node, test_entry_eq);
+            benchmark::DoNotOptimize(success);
         }
     }
 
@@ -308,11 +308,8 @@ static void BM_Contended_Insert(benchmark::State &state) {
         entry->value = key * 2;
         entry->node.hcode = int_hash_rapid(key);
 
-        HNode *old = chm_insert(g_chmap, &entry->node, test_entry_eq);
-        // Will often replace existing entries
-        if (old) {
-            delete container_of(old, CTestEntry, node);
-        }
+        bool success = chm_insert(g_chmap, &entry->node, test_entry_eq);
+        benchmark::DoNotOptimize(success);
     }
 
     state.SetItemsProcessed(state.iterations());

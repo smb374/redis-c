@@ -52,9 +52,9 @@ struct CHMap {
     bool is_alloc;
     alignas(64) atomic_size_t migrate_pos;
     alignas(64) atomic_size_t size; // Use atomic so we don't need a lock for it.
-    pthread_mutex_t st_lock;
-    pthread_mutex_t nb_lock[BUCKET_LOCKS];
-    pthread_mutex_t ob_lock[BUCKET_LOCKS];
+    alignas(64) pthread_rwlock_t st_lock;
+    alignas(64) pthread_mutex_t nb_lock[BUCKET_LOCKS];
+    alignas(64) pthread_mutex_t ob_lock[BUCKET_LOCKS];
 };
 #endif
 
@@ -68,7 +68,7 @@ void hm_foreach(const HMap *hm, bool (*f)(HNode *, void *), void *arg);
 
 CHMap *chm_new(CHMap *hm);
 HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
-HNode *chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *));
+bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *));
 void chm_insert_unchecked(CHMap *hm, HNode *node);
 HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
 void chm_clear(CHMap *hm);

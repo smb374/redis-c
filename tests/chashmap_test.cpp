@@ -2,7 +2,6 @@
 #include <atomic>
 #include <cstdio>
 #include <gtest/gtest.h>
-#include <iostream>
 #include <thread>
 #include <vector>
 
