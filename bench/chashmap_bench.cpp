@@ -230,7 +230,7 @@ static void BM_Mixed_50Read_50Write(benchmark::State &state) {
 
 BENCHMARK(BM_Mixed_50Read_50Write)->ThreadRange(1, 8)->UseRealTime();
 
-// --- Mixed 33/33/33 (33% Lookup, 33% Insert, 33% Delete) ---
+// --- Mixed 80/10/10 (80% Lookup, 10% Insert, 10% Delete) ---
 // Full CRUD workload with constant map size
 
 static void BM_Mixed_CRUD(benchmark::State &state) {
@@ -249,21 +249,22 @@ static void BM_Mixed_CRUD(benchmark::State &state) {
         int op = op_dist(rng);
         uint64_t key = key_dist(rng);
 
-        if (op < 33) {
-            // Lookup (33%)
+        if (op < 80) {
+            // Lookup (80%)
             CTestEntry query;
             query.key = key;
             query.node.hcode = int_hash_rapid(key);
             HNode *result = chm_lookup(g_chmap, &query.node, test_entry_eq);
             benchmark::DoNotOptimize(result);
-        } else if (op < 66) {
-            // Delete (33%)
+        } else if (op < 90) {
+            // Delete (10%)
             CTestEntry query;
             query.key = key;
             query.node.hcode = int_hash_rapid(key);
             HNode *deleted = chm_delete(g_chmap, &query.node, test_entry_eq);
 
             // Re-insert to maintain map size
+            state.PauseTiming();
             if (deleted) {
                 chm_insert(g_chmap, deleted, test_entry_eq);
             } else {
@@ -273,8 +274,9 @@ static void BM_Mixed_CRUD(benchmark::State &state) {
                 entry->node.hcode = int_hash_rapid(key);
                 chm_insert(g_chmap, &entry->node, test_entry_eq);
             }
+            state.ResumeTiming();
         } else {
-            // Insert (33%)
+            // Insert (10%)
             uint64_t insert_key = base_key + local_key++;
             auto *entry = new CTestEntry();
             entry->key = insert_key;

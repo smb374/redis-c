@@ -2,6 +2,7 @@
 #define HASHTABLE_H
 
 #include <stdatomic.h>
+#include "utils.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -12,7 +13,7 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-#define REHASH_WORK 128
+#define REHASH_WORK 64
 #define MAX_LOAD 8
 #define DEFAULT_TABLE_SIZE 128
 #define BUCKET_LOCKS 128
@@ -52,7 +53,8 @@ struct CHMap {
     bool is_alloc;
     alignas(64) atomic_size_t migrate_pos;
     alignas(64) atomic_size_t size; // Use atomic so we don't need a lock for it.
-    alignas(64) pthread_rwlock_t st_lock;
+    // alignas(64) pthread_rwlock_t st_lock;
+    spin_rwlock st_lock;
     alignas(64) pthread_mutex_t nb_lock[BUCKET_LOCKS];
     alignas(64) pthread_mutex_t ob_lock[BUCKET_LOCKS];
 };

@@ -127,8 +127,12 @@ TEST_F(CHashMapTest, MultiThreadedConcurrentInsert) {
                 entry->key = key;
                 entry->value = key * 10;
                 entry->node.hcode = int_hash_rapid(key);
-                chm_insert(chm, &entry->node, test_entry_eq);
-                thread_nodes[i].push_back(entry);
+                bool success = chm_insert(chm, &entry->node, test_entry_eq);
+                if (success) {
+                    thread_nodes[i].push_back(entry);
+                } else {
+                    delete entry;
+                }
             }
         });
     }

@@ -4,6 +4,8 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <rapidhash.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -118,3 +120,20 @@ uint64_t get_clock_ms() {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
 }
+
+void spin_rw_init(spin_rwlock *l) { l->ticket = ATOMIC_VAR_INIT(0); }
+void spin_rw_rlock(spin_rwlock *l) {
+    int v = atomic_load_explicit(&l->ticket, memory_order_acquire);
+    while (v < 0 ||
+           !atomic_compare_exchange_weak_explicit(&l->ticket, &v, v + 1, memory_order_acq_rel, memory_order_relaxed)) {
+        v = atomic_load_explicit(&l->ticket, memory_order_acquire);
+    }
+}
+void spin_rw_runlock(spin_rwlock *l) { atomic_fetch_sub_explicit(&l->ticket, 1, memory_order_release); }
+void spin_rw_wlock(spin_rwlock *l) {
+    int v = 0;
+    while (!atomic_compare_exchange_weak_explicit(&l->ticket, &v, -1, memory_order_acq_rel, memory_order_relaxed)) {
+        v = 0;
+    }
+}
+void spin_rw_wunlock(spin_rwlock *l) { atomic_store_explicit(&l->ticket, 0, memory_order_release); }
