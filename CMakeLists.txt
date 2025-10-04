@@ -37,6 +37,7 @@ add_library(common_lib STATIC
         src/kvstore.c
         src/cqueue.c
         src/thread_pool.c
+        src/qsbr.c
 )
 target_include_directories(common_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -88,17 +89,21 @@ target_link_libraries(cqueue_test PRIVATE common_lib gtest_main pthread)
 add_test(NAME cqueue_test COMMAND cqueue_test)
 ## thread_pool_test
 add_executable(thread_pool_test tests/thread_pool_test.cpp)
-target_link_libraries(thread_pool_test PRIVATE common_lib gtest_main pthread atomic)
+target_link_libraries(thread_pool_test PRIVATE common_lib gtest_main pthread)
 add_test(NAME thread_pool_test COMMAND thread_pool_test)
 ## chashmap_test
 add_executable(chashmap_test tests/chashmap_test.cpp)
-target_link_libraries(chashmap_test PRIVATE common_lib gtest_main pthread atomic)
+target_link_libraries(chashmap_test PRIVATE common_lib gtest_main pthread)
 # target_compile_options(chashmap_test PRIVATE -fsanitize=thread)
 # target_link_options(chashmap_test PRIVATE -fsanitize=thread)
 add_test(NAME chashmap_test COMMAND chashmap_test)
+## qsbr_test
+add_executable(qsbr_test tests/qsbr_test.cpp)
+target_link_libraries(qsbr_test PRIVATE common_lib gtest_main pthread)
+add_test(NAME qsbr_test COMMAND qsbr_test)
 
 # Benchmarks
 ## chashmap_bench
 add_executable(chashmap_bench bench/chashmap_bench.cpp)
-target_link_libraries(chashmap_bench PRIVATE common_lib benchmark::benchmark pthread atomic)
+target_link_libraries(chashmap_bench PRIVATE common_lib benchmark::benchmark pthread)
 
