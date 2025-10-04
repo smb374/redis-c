@@ -2,12 +2,12 @@
 // Created by poyehchen on 9/26/25.
 //
 
-#include "hashtable.h"
-#include "utils.h"
-
 #include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
+
+#include "hashtable.h"
+#include "utils.h"
 
 #define PARTIAL_REHASH_TRIGGER 65536
 
@@ -33,7 +33,7 @@ static void insert_entry(HMap *hm, const uint64_t key, const uint64_t value) {
     entry->key = key;
     entry->value = value;
     entry->node.hcode = int_hash_rapid(key);
-    hm_insert(hm, &entry->node);
+    hm_insert(hm, &entry->node, test_entry_eq);
 }
 
 // --- Test Fixture ---
@@ -266,50 +266,6 @@ TEST_F(HashMapTest, DeleteDuringRehashing) {
         }
     }
 }
-
-// TEST_F(HashMapTest, VisitorIteration) {
-//     HTVisitor vis;
-//
-//     // 1. Test with an empty map
-//     hm_create_visitor(&hm, &vis);
-//     ASSERT_EQ(hm_visit_next(&hm, &vis), nullptr);
-//
-//     // 2. Test with items but no rehashing (all in 'newer' table)
-//     std::set<uint64_t> keys_to_find;
-//     for (uint64_t i = 1; i <= 10; ++i) {
-//         insert_entry(&hm, i, i * 10);
-//         keys_to_find.insert(i);
-//     }
-//
-//     size_t nodes_visited = 0;
-//     hm_create_visitor(&hm, &vis);
-//     HNode *node;
-//     while ((node = hm_visit_next(&hm, &vis))) {
-//         nodes_visited++;
-//         uint64_t key = container_of(node, TestEntry, node)->key;
-//         keys_to_find.erase(key);
-//     }
-//     EXPECT_EQ(nodes_visited, 10);
-//     EXPECT_TRUE(keys_to_find.empty());
-//
-//     // 3. Test with items in both 'older' and 'newer' tables (mid-rehash)
-//     constexpr size_t trigger_count = PARTIAL_REHASH_TRIGGER;
-//     for (uint64_t i = 11; i <= trigger_count + 10; ++i) {
-//         insert_entry(&hm, i, i * 10);
-//         keys_to_find.insert(i);
-//     }
-//     ASSERT_NE(hm.older.tab, nullptr) << "Rehashing should be in progress.";
-//
-//     nodes_visited = 0;
-//     hm_create_visitor(&hm, &vis);
-//     while ((node = hm_visit_next(&hm, &vis))) {
-//         nodes_visited++;
-//         uint64_t key = container_of(node, TestEntry, node)->key;
-//         keys_to_find.erase(key);
-//     }
-//     EXPECT_EQ(nodes_visited, trigger_count + 10);
-//     EXPECT_TRUE(keys_to_find.empty());
-// }
 
 // The main function that runs all of the tests
 int main(int argc, char **argv) {

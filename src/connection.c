@@ -184,7 +184,10 @@ ConnState handle_accept(ConnManager *cm, const int epfd, const int srv_fd) {
         }
         Conn *conn = calloc(1, sizeof(*conn));
         conn_init(conn, cfd);
-        hm_insert(&cm->pool, &conn->pool_node);
+        HNode *prev = hm_insert(&cm->pool, &conn->pool_node, conn_eq);
+        if (prev) {
+            conn_clear(container_of(prev, Conn, pool_node));
+        }
         dlist_insert_before(&cm->idle, &conn->list_node);
         return OK;
     }

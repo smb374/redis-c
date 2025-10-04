@@ -2,6 +2,7 @@
 // Created by poyehchen on 9/28/25.
 //
 #include "zset.h"
+#include "hashtable.h"
 #include "utils.h"
 
 #include <assert.h>
@@ -94,7 +95,7 @@ bool zset_insert(ZSet *zset, const char *name, const size_t len, const double sc
     }
 
     node = znode_new(name, len, score);
-    hm_insert(&zset->hm, &node->hnode);
+    hm_insert_unchecked(&zset->hm, &node->hnode);
     sl_insert(&zset->sl, &node->tnode, zcmp);
     return true;
 }

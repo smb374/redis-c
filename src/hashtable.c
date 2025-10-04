@@ -94,7 +94,39 @@ HNode *hm_lookup(HMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
     return from ? *from : NULL;
 }
 
-void hm_insert(HMap *hm, HNode *node) {
+HNode *hm_insert(HMap *hm, HNode *node, bool (*eq)(HNode *, HNode *)) {
+    if (!hm->newer.tab) {
+        ht_init(&hm->newer, DEFAULT_TABLE_SIZE); // initialize it if empty
+    }
+    HNode *result = NULL, **from;
+    if ((from = ht_lookup(&hm->newer, node, eq))) {
+        result = ht_detach(&hm->newer, from);
+        if (result) {
+            ht_insert(&hm->newer, node);
+        }
+    }
+    if ((from = ht_lookup(&hm->older, node, eq))) {
+        result = ht_detach(&hm->older, from);
+        if (result) {
+            ht_insert(&hm->older, node);
+        }
+    }
+    if (!result) {
+        ht_insert(&hm->newer, node); // always insert to the newer table
+    }
+
+    if (!hm->older.tab) {
+        // check whether we need to rehash
+        const size_t threshold = (hm->newer.mask + 1) * MAX_LOAD;
+        if (hm->newer.size >= threshold) {
+            hm_trigger_rehashing(hm);
+        }
+    }
+    hm_help_rehashing(hm); // migrate some keys
+    return result;
+}
+
+void hm_insert_unchecked(HMap *hm, HNode *node) {
     if (!hm->newer.tab) {
         ht_init(&hm->newer, DEFAULT_TABLE_SIZE); // initialize it if empty
     }
@@ -109,7 +141,6 @@ void hm_insert(HMap *hm, HNode *node) {
     }
     hm_help_rehashing(hm); // migrate some keys
 }
-
 HNode *hm_delete(HMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
     hm_help_rehashing(hm);
     HNode **from;
@@ -160,6 +191,8 @@ HNode **cht_lookup(const CHTable *ht, HNode *key, bool (*eq)(HNode *, HNode *)) 
 
     const size_t pos = key->hcode & ht->mask;
     HNode **from = &ht->tab[pos]; // incoming pointer to the target
+    if (!from)
+        return NULL;
     for (HNode *cur; (cur = *from) != NULL; from = &cur->next) {
         if (cur->hcode == key->hcode && eq(cur, key))
             return from; // may be a node, may be a slot
@@ -194,12 +227,8 @@ void chm_help_rehashing(CHMap *hm) {
             break;
         }
         const size_t olidx = bidx % BUCKET_LOCKS;
-        pthread_mutex_lock(&hm->st_lock);
-        if (!hm->older.tab) {
-            pthread_mutex_unlock(&hm->st_lock);
+        if (!hm->older.tab)
             break;
-        }
-        pthread_mutex_unlock(&hm->st_lock);
         pthread_mutex_lock(&hm->ob_lock[olidx]);
         cur = hm->older.tab[bidx];
         hm->older.tab[bidx] = NULL;
@@ -297,10 +326,58 @@ HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
     return result;
 }
 
-void chm_insert(CHMap *hm, HNode *node) {
+HNode *chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *)) {
+    const size_t nlidx = node->hcode % BUCKET_LOCKS;
+    const size_t olidx = node->hcode % BUCKET_LOCKS;
+    HNode *result = NULL;
+    pthread_mutex_lock(&hm->ob_lock[olidx]);
+    pthread_mutex_lock(&hm->nb_lock[nlidx]);
+
+    HNode **from = cht_lookup(&hm->newer, node, eq);
+    if (from) {
+        result = cht_detach(&hm->newer, from, &hm->size);
+        if (result) {
+            cht_insert(&hm->newer, node, &hm->size);
+        }
+    } else if (hm->older.tab) {
+        from = cht_lookup(&hm->older, node, eq);
+        if (from) {
+            result = cht_detach(&hm->older, from, &hm->size);
+            if (result) {
+                cht_insert(&hm->older, node, &hm->size);
+            }
+        }
+    }
+
+    if (!result) {
+        cht_insert(&hm->newer, node, &hm->size);
+    }
+
+    pthread_mutex_unlock(&hm->nb_lock[nlidx]);
+    pthread_mutex_unlock(&hm->ob_lock[olidx]);
+
+    size_t old_size = atomic_load_explicit(&hm->older.size, memory_order_acquire);
+    if (!old_size) {
+        pthread_mutex_lock(&hm->st_lock);
+        if (!hm->older.tab) {
+            // check whether we need to rehash
+            size_t new_size = atomic_load_explicit(&hm->newer.size, memory_order_acquire);
+            const size_t threshold = (hm->newer.mask + 1) * MAX_LOAD;
+            if (new_size >= threshold) {
+                chm_trigger_rehashing(hm);
+            }
+        }
+        pthread_mutex_unlock(&hm->st_lock);
+    }
+
+    chm_help_rehashing(hm); // migrate some keys
+    return result;
+}
+
+void chm_insert_unchecked(CHMap *hm, HNode *node) {
     const size_t nlidx = node->hcode % BUCKET_LOCKS;
     pthread_mutex_lock(&hm->nb_lock[nlidx]);
-    cht_insert(&hm->newer, node, &hm->size); // always insert to the newer table
+    cht_insert(&hm->newer, node, &hm->size);
     pthread_mutex_unlock(&hm->nb_lock[nlidx]);
 
     size_t old_size = atomic_load_explicit(&hm->older.size, memory_order_acquire);

@@ -67,13 +67,13 @@ TEST_F(CHashMapTest, SingleThreadedInsertAndLookup) {
     entry1->key = 100;
     entry1->value = 1000;
     entry1->node.hcode = int_hash_rapid(100);
-    chm_insert(chm, &entry1->node);
+    chm_insert_unchecked(chm, &entry1->node);
 
     auto *entry2 = new CTestEntry();
     entry2->key = 200;
     entry2->value = 2000;
     entry2->node.hcode = int_hash_rapid(200);
-    chm_insert(chm, &entry2->node);
+    chm_insert_unchecked(chm, &entry2->node);
 
     ASSERT_EQ(chm_size(chm), 2);
 
@@ -93,7 +93,7 @@ TEST_F(CHashMapTest, SingleThreadedDelete) {
     auto *entry1 = new CTestEntry();
     entry1->key = 100;
     entry1->node.hcode = int_hash_rapid(100);
-    chm_insert(chm, &entry1->node);
+    chm_insert_unchecked(chm, &entry1->node);
 
     ASSERT_EQ(chm_size(chm), 1);
 
@@ -128,7 +128,7 @@ TEST_F(CHashMapTest, MultiThreadedConcurrentInsert) {
                 entry->key = key;
                 entry->value = key * 10;
                 entry->node.hcode = int_hash_rapid(key);
-                chm_insert(chm, &entry->node);
+                chm_insert(chm, &entry->node, test_entry_eq);
                 thread_nodes[i].push_back(entry);
             }
         });
@@ -166,7 +166,7 @@ TEST_F(CHashMapTest, MultiThreadedConcurrentInsertDelete) {
         entry->key = i;
         entry->value = i;
         entry->node.hcode = int_hash_rapid(i);
-        chm_insert(chm, &entry->node);
+        chm_insert_unchecked(chm, &entry->node);
         all_nodes.push_back(entry);
     }
 
@@ -197,7 +197,7 @@ TEST_F(CHashMapTest, MultiThreadedConcurrentInsertDelete) {
                     entry->key = new_key;
                     entry->value = new_key;
                     entry->node.hcode = int_hash_rapid(new_key);
-                    chm_insert(chm, &entry->node);
+                    chm_insert(chm, &entry->node, test_entry_eq);
                 }
             }
         });

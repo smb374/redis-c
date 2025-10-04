@@ -59,7 +59,8 @@ struct CHMap {
 #endif
 
 HNode *hm_lookup(HMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
-void hm_insert(HMap *hm, HNode *node);
+HNode *hm_insert(HMap *hm, HNode *node, bool (*eq)(HNode *, HNode *));
+void hm_insert_unchecked(HMap *hm, HNode *node);
 HNode *hm_delete(HMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
 void hm_clear(HMap *hm);
 size_t hm_size(const HMap *hm);
@@ -67,7 +68,8 @@ void hm_foreach(const HMap *hm, bool (*f)(HNode *, void *), void *arg);
 
 CHMap *chm_new(CHMap *hm);
 HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
-void chm_insert(CHMap *hm, HNode *node);
+HNode *chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *));
+void chm_insert_unchecked(CHMap *hm, HNode *node);
 HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
 void chm_clear(CHMap *hm);
 size_t chm_size(CHMap *hm);

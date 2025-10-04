@@ -160,7 +160,7 @@ void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
         vstr_cpy(&ent->val.s, vstr);
         ent->node.hcode = key.node.hcode;
         ent->heap_idx = (size_t) -1;
-        hm_insert(&kv->store, &ent->node);
+        hm_insert_unchecked(&kv->store, &ent->node);
     }
     out_nil(out);
 }
@@ -210,7 +210,7 @@ void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *na
         ent->node.hcode = key.node.hcode;
         ent->heap_idx = (size_t) -1;
         zset_init(&ent->val.zs);
-        hm_insert(&kv->store, &ent->node);
+        hm_insert_unchecked(&kv->store, &ent->node);
     } else {
         ent = container_of(node, Entry, node);
         if (ent->type != ENT_ZSET) {
