@@ -237,6 +237,7 @@ static void BM_Mixed_CRUD(benchmark::State &state) {
     InitializeMap();
 
     const int thread_id = state.thread_index();
+    const int num_threads = state.threads();
     std::mt19937 rng(thread_id);
     std::uniform_int_distribution<uint64_t> key_dist(0, 499999);
     std::uniform_int_distribution<int> op_dist(0, 99);
@@ -244,6 +245,7 @@ static void BM_Mixed_CRUD(benchmark::State &state) {
     const uint64_t keys_per_thread = 1000000;
     const uint64_t base_key = 30000000 + thread_id * keys_per_thread;
     uint64_t local_key = 0;
+    std::vector<std::vector<CTestEntry *>> dentries(num_threads);
 
     for (auto _: state) {
         int op = op_dist(rng);
@@ -266,13 +268,7 @@ static void BM_Mixed_CRUD(benchmark::State &state) {
             // Re-insert to maintain map size
             state.PauseTiming();
             if (deleted) {
-                chm_insert(g_chmap, deleted, test_entry_eq);
-            } else {
-                auto *entry = new CTestEntry();
-                entry->key = key;
-                entry->value = key * 2;
-                entry->node.hcode = int_hash_rapid(key);
-                chm_insert(g_chmap, &entry->node, test_entry_eq);
+                dentries[thread_id].push_back(container_of(deleted, CTestEntry, node));
             }
             state.ResumeTiming();
         } else {
@@ -288,6 +284,11 @@ static void BM_Mixed_CRUD(benchmark::State &state) {
     }
 
     state.SetItemsProcessed(state.iterations());
+    for (auto &v: dentries) {
+        for (auto d: v) {
+            delete d;
+        }
+    }
 }
 
 BENCHMARK(BM_Mixed_CRUD)->ThreadRange(1, 8)->UseRealTime();

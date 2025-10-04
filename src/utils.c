@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <threads.h>
 #include <time.h>
 
 uint32_t next_pow2m1(uint32_t x) {
@@ -126,6 +127,7 @@ void spin_rw_rlock(spin_rwlock *l) {
     int v = atomic_load_explicit(&l->ticket, memory_order_acquire);
     while (v < 0 ||
            !atomic_compare_exchange_weak_explicit(&l->ticket, &v, v + 1, memory_order_acq_rel, memory_order_relaxed)) {
+        __builtin_ia32_pause();
         v = atomic_load_explicit(&l->ticket, memory_order_acquire);
     }
 }
@@ -133,6 +135,7 @@ void spin_rw_runlock(spin_rwlock *l) { atomic_fetch_sub_explicit(&l->ticket, 1, 
 void spin_rw_wlock(spin_rwlock *l) {
     int v = 0;
     while (!atomic_compare_exchange_weak_explicit(&l->ticket, &v, -1, memory_order_acq_rel, memory_order_relaxed)) {
+        __builtin_ia32_pause();
         v = 0;
     }
 }
