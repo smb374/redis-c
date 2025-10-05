@@ -500,7 +500,7 @@ bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *)) {
     }
 
     bool marked = chm_help_rehashing(hm); // migrate some keys
-    write_counter = (write_counter + 1) % 1000;
+    write_counter = (write_counter + 1) & 0xFF;
     if (!marked && !write_counter)
         qsbr_quiescent(&hm->gc, hm_tid);
     return result;
@@ -529,7 +529,7 @@ void chm_insert_unchecked(CHMap *hm, HNode *node) {
     }
 
     bool marked = chm_help_rehashing(hm); // migrate some keys
-    write_counter = (write_counter + 1) % 1000;
+    write_counter = (write_counter + 1) & 0xFF;
     if (!marked && !write_counter)
         qsbr_quiescent(&hm->gc, hm_tid);
 }
@@ -559,7 +559,7 @@ HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
     }
 
     bool marked = chm_help_rehashing(hm); // migrate some keys
-    write_counter = (write_counter + 1) % 1000;
+    write_counter = (write_counter + 1) & 0xFF;
     if (!marked && !write_counter)
         qsbr_quiescent(&hm->gc, hm_tid);
     return result;
