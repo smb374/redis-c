@@ -47,6 +47,9 @@ void qsbr_destroy(qsbr *gc) {
     }
     cq_destroy(gc->curr);
     cq_destroy(gc->prev);
+    atomic_init(&gc->quiescent, 0);
+    atomic_init(&gc->active, 0);
+    atomic_init(&gc->threads, 0);
     if (gc->is_alloc) {
         free(gc);
     }

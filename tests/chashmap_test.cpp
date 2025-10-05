@@ -53,10 +53,7 @@ protected:
         }
     }
 
-    void SetUp() override {
-        // Register each test thread with the map's QSBR instance
-        chm_register(g_chmap);
-    }
+    void SetUp() override {}
 };
 
 CHMap *CHMapTest::g_chmap = nullptr;
@@ -68,6 +65,7 @@ std::mutex CHMapTest::g_purgatory_mutex;
 // --- Test Cases ---
 
 TEST_F(CHMapTest, SingleThreadInsertAndLookup) {
+    chm_register(g_chmap);
     uint64_t key = 1001;
     auto *entry = new TestEntry{{}, key, key * 2};
     entry->node.hcode = int_hash_rapid(key);
@@ -85,6 +83,7 @@ TEST_F(CHMapTest, SingleThreadInsertAndLookup) {
 }
 
 TEST_F(CHMapTest, SingleThreadSafeDelete) {
+    chm_register(g_chmap);
     uint64_t key = 2002;
     auto *entry = new TestEntry{{}, key, key * 2};
     entry->node.hcode = int_hash_rapid(key);

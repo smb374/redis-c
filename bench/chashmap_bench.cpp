@@ -1,6 +1,7 @@
 #include <atomic>
 #include <benchmark/benchmark.h>
 #include <random>
+#include <thread>
 
 extern "C" {
 #include "hashtable.h"
@@ -21,42 +22,79 @@ static bool test_entry_eq(HNode *lhs, HNode *rhs) {
     return le->key == re->key;
 }
 
-// --- Global State ---
-// We use a single global map that persists across benchmarks to avoid
-// expensive setup/teardown between iterations
+// --- Benchmark Fixture ---
 
-static CHMap *g_chmap = nullptr;
-static std::atomic<bool> g_initialized{false};
-static std::atomic<uint64_t> g_next_key{0};
+class CHashMapFixture : public benchmark::Fixture {
+public:
+    static CHMap *g_chmap;
+    static std::atomic<bool> g_initialized;
+    static std::atomic<int> g_init_complete;
+    static std::atomic<int> g_thread_count;
+    static std::atomic<int> g_teardown_count;
 
-// Initialize map once
-static void InitializeMap() {
-    bool expected = false;
-    if (g_initialized.compare_exchange_strong(expected, true)) {
-        g_chmap = chm_new(nullptr);
+    void SetUp(const ::benchmark::State &state) override {
+        // First thread initializes the map
+        bool expected = false;
+        if (g_initialized.compare_exchange_strong(expected, true)) {
+            g_chmap = chm_new(nullptr);
 
-        // Pre-populate with 500k entries for lookup/delete tests
-        const uint64_t prefill_count = 500000;
-        for (uint64_t i = 0; i < prefill_count; i++) {
-            auto *entry = new CTestEntry();
-            entry->key = i;
-            entry->value = i * 2;
-            entry->node.hcode = int_hash_rapid(i);
-            chm_insert(g_chmap, &entry->node, test_entry_eq);
+            // Pre-populate with 500k entries for lookup/delete tests
+            const uint64_t prefill_count = 500000;
+            for (uint64_t i = 0; i < prefill_count; i++) {
+                auto *entry = new CTestEntry();
+                entry->key = i;
+                entry->value = i * 2;
+                entry->node.hcode = int_hash_rapid(i);
+                chm_insert(g_chmap, &entry->node, test_entry_eq);
+            }
+
+            // Signal that initialization is complete
+            g_init_complete.store(1, std::memory_order_release);
+        } else {
+            // Other threads wait for initialization to complete
+            while (g_init_complete.load(std::memory_order_acquire) == 0) {
+                std::this_thread::yield();
+            }
         }
 
-        g_next_key.store(prefill_count);
+        // All threads register with the map for QSBR
+        chm_register(g_chmap);
+
+        // Track active threads
+        g_thread_count.fetch_add(1, std::memory_order_relaxed);
     }
-}
+
+    void TearDown(const ::benchmark::State &state) override {
+        // Last thread cleans up the map to prevent QSBR overflow
+        int remaining = g_thread_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
+
+        if (remaining == 0) {
+            // Reset for next benchmark
+            g_teardown_count.fetch_add(1, std::memory_order_relaxed);
+
+            // Clear the map to reset QSBR state
+            chm_clear(g_chmap);
+            free(g_chmap);
+            g_chmap = nullptr;
+
+            // Reset initialization flags for next benchmark
+            g_initialized.store(false, std::memory_order_release);
+            g_init_complete.store(0, std::memory_order_release);
+        }
+    }
+};
+
+// Static member initialization
+CHMap *CHashMapFixture::g_chmap = nullptr;
+std::atomic<bool> CHashMapFixture::g_initialized{false};
+std::atomic<int> CHashMapFixture::g_init_complete{0};
+std::atomic<int> CHashMapFixture::g_thread_count{0};
+std::atomic<int> CHashMapFixture::g_teardown_count{0};
 
 // --- Pure Insert Benchmark ---
-// Each thread inserts unique keys to minimize contention
 
-static void BM_Insert(benchmark::State &state) {
-    InitializeMap();
-
+BENCHMARK_DEFINE_F(CHashMapFixture, BM_Insert)(benchmark::State &state) {
     const int thread_id = state.thread_index();
-    const int num_threads = state.threads();
 
     // Reserve key space for this thread to avoid conflicts
     const uint64_t keys_per_thread = 1000000;
@@ -72,22 +110,17 @@ static void BM_Insert(benchmark::State &state) {
         entry->node.hcode = int_hash_rapid(key);
 
         bool success = chm_insert(g_chmap, &entry->node, test_entry_eq);
-        // Should always be NULL (new insert) since keys are unique
         benchmark::DoNotOptimize(success);
     }
 
     state.SetItemsProcessed(state.iterations());
 }
 
-BENCHMARK(BM_Insert)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHashMapFixture, BM_Insert)->ThreadRange(1, 8)->UseRealTime();
 
 // --- Pure Lookup Benchmark ---
-// Look up keys from the pre-populated range
 
-static void BM_Lookup(benchmark::State &state) {
-    InitializeMap();
-
-    // Use thread-local random to avoid contention on RNG
+BENCHMARK_DEFINE_F(CHashMapFixture, BM_Lookup)(benchmark::State &state) {
     std::mt19937 rng(state.thread_index());
     std::uniform_int_distribution<uint64_t> dist(0, 499999);
 
@@ -105,15 +138,11 @@ static void BM_Lookup(benchmark::State &state) {
     state.SetItemsProcessed(state.iterations());
 }
 
-BENCHMARK(BM_Lookup)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHashMapFixture, BM_Lookup)->ThreadRange(1, 8)->UseRealTime();
 
 // --- Pure Delete Benchmark ---
-// Delete and re-insert to maintain constant map size
-// This avoids the "delete fails after first pass" problem
 
-static void BM_Delete(benchmark::State &state) {
-    InitializeMap();
-
+BENCHMARK_DEFINE_F(CHashMapFixture, BM_Delete)(benchmark::State &state) {
     std::mt19937 rng(state.thread_index());
     std::uniform_int_distribution<uint64_t> dist(0, 499999);
 
@@ -130,7 +159,6 @@ static void BM_Delete(benchmark::State &state) {
         if (deleted) {
             chm_insert(g_chmap, deleted, test_entry_eq);
         } else {
-            // Key wasn't present, insert a new one
             auto *entry = new CTestEntry();
             entry->key = key;
             entry->value = key * 2;
@@ -142,14 +170,11 @@ static void BM_Delete(benchmark::State &state) {
     state.SetItemsProcessed(state.iterations());
 }
 
-BENCHMARK(BM_Delete)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHashMapFixture, BM_Delete)->ThreadRange(1, 8)->UseRealTime();
 
 // --- Mixed 80/20 (80% Lookup, 20% Insert) ---
-// Read-heavy workload - typical for caches
 
-static void BM_Mixed_80Read_20Write(benchmark::State &state) {
-    InitializeMap();
-
+BENCHMARK_DEFINE_F(CHashMapFixture, BM_Mixed_80Read_20Write)(benchmark::State &state) {
     const int thread_id = state.thread_index();
     std::mt19937 rng(thread_id);
     std::uniform_int_distribution<uint64_t> lookup_dist(0, 499999);
@@ -185,14 +210,11 @@ static void BM_Mixed_80Read_20Write(benchmark::State &state) {
     state.SetItemsProcessed(state.iterations());
 }
 
-BENCHMARK(BM_Mixed_80Read_20Write)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHashMapFixture, BM_Mixed_80Read_20Write)->ThreadRange(1, 8)->UseRealTime();
 
 // --- Mixed 50/50 (50% Lookup, 50% Insert) ---
-// Balanced workload
 
-static void BM_Mixed_50Read_50Write(benchmark::State &state) {
-    InitializeMap();
-
+BENCHMARK_DEFINE_F(CHashMapFixture, BM_Mixed_50Read_50Write)(benchmark::State &state) {
     const int thread_id = state.thread_index();
     std::mt19937 rng(thread_id);
     std::uniform_int_distribution<uint64_t> lookup_dist(0, 499999);
@@ -228,14 +250,11 @@ static void BM_Mixed_50Read_50Write(benchmark::State &state) {
     state.SetItemsProcessed(state.iterations());
 }
 
-BENCHMARK(BM_Mixed_50Read_50Write)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHashMapFixture, BM_Mixed_50Read_50Write)->ThreadRange(1, 8)->UseRealTime();
 
 // --- Mixed 80/10/10 (80% Lookup, 10% Insert, 10% Delete) ---
-// Full CRUD workload with constant map size
 
-static void BM_Mixed_CRUD(benchmark::State &state) {
-    InitializeMap();
-
+BENCHMARK_DEFINE_F(CHashMapFixture, BM_Mixed_CRUD)(benchmark::State &state) {
     const int thread_id = state.thread_index();
     const int num_threads = state.threads();
     std::mt19937 rng(thread_id);
@@ -265,7 +284,7 @@ static void BM_Mixed_CRUD(benchmark::State &state) {
             query.node.hcode = int_hash_rapid(key);
             HNode *deleted = chm_delete(g_chmap, &query.node, test_entry_eq);
 
-            // Re-insert to maintain map size
+            // QSBR handles reclamation, but we track for manual cleanup
             state.PauseTiming();
             if (deleted) {
                 dentries[thread_id].push_back(container_of(deleted, CTestEntry, node));
@@ -291,14 +310,11 @@ static void BM_Mixed_CRUD(benchmark::State &state) {
     }
 }
 
-BENCHMARK(BM_Mixed_CRUD)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHashMapFixture, BM_Mixed_CRUD)->ThreadRange(1, 8)->UseRealTime();
 
 // --- Contended Workload ---
-// All threads fight over the same small key range
 
-static void BM_Contended_Insert(benchmark::State &state) {
-    InitializeMap();
-
+BENCHMARK_DEFINE_F(CHashMapFixture, BM_Contended_Insert)(benchmark::State &state) {
     std::mt19937 rng(state.thread_index());
     // Only 10k possible keys - high contention!
     std::uniform_int_distribution<uint64_t> dist(1000000, 1009999);
@@ -318,6 +334,6 @@ static void BM_Contended_Insert(benchmark::State &state) {
     state.SetItemsProcessed(state.iterations());
 }
 
-BENCHMARK(BM_Contended_Insert)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHashMapFixture, BM_Contended_Insert)->ThreadRange(1, 8)->UseRealTime();
 
 BENCHMARK_MAIN();

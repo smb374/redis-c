@@ -402,7 +402,7 @@ void chm_register(CHMap *hm) {
 }
 
 void chm_clear(CHMap *hm) {
-    // qsbr_destroy(&hm->gc);
+    qsbr_destroy(&hm->gc);
     CHTable *lnew = atomic_exchange_explicit(&hm->newer, NULL, memory_order_acquire);
     CHTable *lold = atomic_exchange_explicit(&hm->older, NULL, memory_order_acquire);
     if (lnew) {
