@@ -47,6 +47,7 @@ struct ebr_manager {
 #endif
 
 void ebr_init(ebr_manager *m);
+ebr_manager *ebr_new();
 void ebr_destroy(ebr_manager *m);
 void *ebr_calloc(size_t nmemb, size_t size);
 void *ebr_realloc(void *ptr, size_t size);

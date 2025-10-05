@@ -98,6 +98,10 @@ target_link_libraries(chashmap_test PRIVATE common_lib gtest_main pthread atomic
 # target_compile_options(chashmap_test PRIVATE -fsanitize=thread)
 # target_link_options(chashmap_test PRIVATE -fsanitize=thread)
 add_test(NAME chashmap_test COMMAND chashmap_test)
+## ebr_test
+add_executable(ebr_test tests/ebr_test.cpp)
+target_link_libraries(ebr_test PRIVATE common_lib gtest_main pthread atomic)
+add_test(NAME ebr_test COMMAND ebr_test)
 ## qsbr_test
 add_executable(qsbr_test tests/qsbr_test.cpp)
 target_link_libraries(qsbr_test PRIVATE common_lib gtest_main pthread)

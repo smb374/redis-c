@@ -15,6 +15,11 @@ static __thread ebr_tstate tstate = {
         .idx = -1,
 };
 
+ebr_manager *ebr_new() {
+    ebr_manager *m = calloc(1, sizeof(ebr_manager));
+    ebr_init(m);
+    return m;
+}
 void ebr_init(ebr_manager *m) {
     pthread_mutex_init(&m->lock, NULL);
     for (int i = 0; i < N_EPOCHS; i++) {
