@@ -1,7 +1,3 @@
-#include "hashtable.h"
-#include "qsbr.h"
-#include "utils.h"
-
 #include <assert.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -10,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+#include "hashtable.h"
+#include "qsbr.h"
+#include "utils.h"
 
 static __thread qsbr_tid hm_tid = -1;
 
@@ -171,29 +171,65 @@ void hm_foreach(const HMap *hm, bool (*f)(HNode *, void *), void *arg) {
 }
 
 // Concurrent Internal Functions
-void cht_init(CHTable *ht, size_t n) {
+CHTable *cht_init(CHTable *ht, size_t n) {
     assert(n > 0 && ((n - 1) & n) == 0);
+    if (!ht) {
+        ht = calloc(1, sizeof(CHTable));
+        if (!ht) {
+            perror("calloc()");
+            exit(EXIT_FAILURE);
+        }
+        ht->is_alloc = true;
+    } else {
+        ht->is_alloc = false;
+    }
     ht->tab = calloc(n, sizeof(HNode *));
     assert(ht->tab != NULL);
-    ht->mask = n - 1;
-    ht->size = ATOMIC_VAR_INIT(0);
+    atomic_store_explicit(&ht->size, 0, memory_order_release);
+    atomic_store_explicit(&ht->mask, n - 1, memory_order_release);
+    return ht;
 }
 
-void cht_insert(CHTable *ht, HNode *node, atomic_size_t *gsize) {
-    if (!node)
+void cht_destroy(CHTable *ht) {
+    if (ht->tab)
+        free(ht->tab);
+    atomic_store_explicit(&ht->size, 0, memory_order_release);
+    atomic_store_explicit(&ht->mask, 0, memory_order_release);
+    if (ht->is_alloc) {
+        free(ht);
+    }
+}
+
+void cht_destroy_cb(void *arg) {
+    CHTable *ht = arg;
+    if (!ht)
         return;
-    const size_t pos = node->hcode & ht->mask;
+    cht_destroy(ht);
+}
+
+bool cht_insert(CHTable *ht, HNode *node, atomic_size_t *gsize) {
+    if (!node)
+        return false;
+    size_t mask = atomic_load_explicit(&ht->mask, memory_order_acquire);
+    if (!mask)
+        return false;
+    const size_t pos = node->hcode & mask;
     HNode *next = ht->tab[pos];
     node->next = next;
     ht->tab[pos] = node;
     atomic_fetch_add_explicit(&ht->size, 1, memory_order_acq_rel);
     atomic_fetch_add_explicit(gsize, 1, memory_order_relaxed);
+    return true;
 }
 
 HNode **cht_lookup(const CHTable *ht, HNode *key, bool (*eq)(HNode *, HNode *)) {
-    if (!ht->tab || !ht->mask || !ht->size)
+    if (!ht)
         return NULL;
 
+    size_t mask = atomic_load_explicit(&ht->mask, memory_order_acquire);
+    size_t size = atomic_load_explicit(&ht->size, memory_order_acquire);
+    if (!mask || !size)
+        return NULL;
     const size_t pos = key->hcode & ht->mask;
     HNode **from = &ht->tab[pos]; // incoming pointer to the target
     if (!from)
@@ -222,27 +258,28 @@ void chm_help_rehashing(CHMap *hm) {
     // in current iteration.
     HNode *clist[BUCKET_LOCKS], *cur;
     bzero(clist, sizeof(HNode *) * BUCKET_LOCKS);
-    size_t nwork = 0, cnt = 0, older_size;
+    size_t nwork = 0, cnt = 0, osize, omask, nmask;
     bool clean_old = false;
+    CHTable *lnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+    CHTable *lold;
 
     while (nwork < REHASH_WORK) {
-        // Read phase
-        spin_rw_rlock(&hm->st_lock);
-        if (!hm->older.tab) {
-            spin_rw_runlock(&hm->st_lock);
+        lold = atomic_load_explicit(&hm->older, memory_order_acquire);
+        if (!lold)
             return;
-        }
+        omask = atomic_load_explicit(&lold->mask, memory_order_acquire);
+        if (!omask)
+            return;
+        // Read phase
         size_t bidx = atomic_fetch_add_explicit(&hm->migrate_pos, 1, memory_order_acq_rel);
-        if (bidx > hm->older.mask) {
-            spin_rw_runlock(&hm->st_lock);
+        if (bidx > omask) {
             break;
         }
-        spin_rw_runlock(&hm->st_lock);
         // Bucket Migrate
         const size_t olidx = bidx % BUCKET_LOCKS;
         pthread_mutex_lock(&hm->ob_lock[olidx]);
-        cur = hm->older.tab[bidx];
-        hm->older.tab[bidx] = NULL;
+        cur = lold->tab[bidx];
+        lold->tab[bidx] = NULL;
         pthread_mutex_unlock(&hm->ob_lock[olidx]);
         if (!cur) {
             continue;
@@ -259,50 +296,64 @@ void chm_help_rehashing(CHMap *hm) {
         }
         nwork += cnt;
         // Insert to newer
+        lnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+        nmask = atomic_load_explicit(&lnew->mask, memory_order_acquire);
         cnt = 0;
         for (int i = 0; i < BUCKET_LOCKS && nwork > 0; i++) {
             if (!clist[i])
                 continue;
             pthread_mutex_lock(&hm->nb_lock[i]);
             while (clist[i]) {
-                const size_t pos = clist[i]->hcode & hm->newer.mask;
+                const size_t pos = clist[i]->hcode & nmask;
                 HNode *cnext = clist[i]->next;
-                HNode *next = hm->newer.tab[pos];
+                HNode *next = lnew->tab[pos];
                 clist[i]->next = next;
-                hm->newer.tab[pos] = clist[i];
+                lnew->tab[pos] = clist[i];
                 clist[i] = cnext;
                 cnt++;
             }
             pthread_mutex_unlock(&hm->nb_lock[i]);
         }
-        atomic_fetch_sub_explicit(&hm->older.size, cnt, memory_order_acq_rel);
-        atomic_fetch_add_explicit(&hm->newer.size, cnt, memory_order_acq_rel);
+        atomic_fetch_sub_explicit(&lold->size, cnt, memory_order_acq_rel);
+        atomic_fetch_add_explicit(&lnew->size, cnt, memory_order_acq_rel);
     }
 
-    older_size = atomic_load_explicit(&hm->older.size, memory_order_acquire);
-    if (!older_size) {
-        spin_rw_wlock(&hm->st_lock);
-        older_size = atomic_load_explicit(&hm->older.size, memory_order_acquire);
-        if (!older_size && hm->older.tab) {
-            qsbr_alloc_cb(&hm->gc, free, hm->older.tab);
-            hm->older.tab = NULL;
-            hm->older.mask = 0;
+    if (lold) {
+        osize = atomic_load_explicit(&lold->size, memory_order_acquire);
+        if (!osize) {
+            CHTable *cht = atomic_exchange_explicit(&hm->older, NULL, memory_order_acq_rel);
+            if (cht) {
+                qsbr_quiescent(&hm->gc, hm_tid);
+                qsbr_alloc_cb(&hm->gc, cht_destroy_cb, cht);
+            }
         }
-        spin_rw_wunlock(&hm->st_lock);
     }
 }
 
 void chm_trigger_rehashing(CHMap *hm) {
-    hm->older = hm->newer;
-    cht_init(&hm->newer, (hm->newer.mask + 1) << 1);
+    CHTable *pnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+    size_t nmask = atomic_load_explicit(&pnew->mask, memory_order_acquire);
+    CHTable *pold = atomic_load_explicit(&hm->older, memory_order_acquire);
+    if (pold) {
+        return;
+    }
+    while (!atomic_compare_exchange_strong_explicit(&hm->older, &pold, pnew, memory_order_acq_rel,
+                                                    memory_order_acquire)) {
+        if (pold) {
+            return;
+        }
+    }
+    CHTable *nnew = cht_init(NULL, (nmask + 1) << 1);
+    atomic_store_explicit(&hm->newer, nnew, memory_order_release);
     atomic_store_explicit(&hm->migrate_pos, 0, memory_order_release);
 }
 
 bool cht_foreach(CHTable *ht, pthread_mutex_t *locks, bool (*f)(HNode *, void *), void *arg) {
-    if (!ht->tab)
+    if (!ht)
         return false;
 
-    for (int i = 0; i <= ht->mask; i++) {
+    size_t mask = atomic_load_explicit(&ht->mask, memory_order_acquire);
+    for (int i = 0; i <= mask; i++) {
         pthread_mutex_lock(&locks[i % BUCKET_LOCKS]);
         for (HNode *node = ht->tab[i]; node; node = node->next) {
             if (!f(node, arg)) {
@@ -317,166 +368,6 @@ bool cht_foreach(CHTable *ht, pthread_mutex_t *locks, bool (*f)(HNode *, void *)
 
 // Concurrent Public Interface
 // Public Interface
-HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
-    const size_t nlidx = key->hcode % BUCKET_LOCKS;
-    const size_t olidx = key->hcode % BUCKET_LOCKS;
-    HNode *result = NULL, **from;
-    spin_rw_rlock(&hm->st_lock);
-    if (!hm->newer.tab && !hm->older.tab) {
-        spin_rw_runlock(&hm->st_lock);
-        return NULL;
-    }
-
-    if (hm->newer.tab) {
-        pthread_mutex_lock(&hm->nb_lock[nlidx]);
-        from = cht_lookup(&hm->newer, key, eq);
-        result = from ? *from : NULL;
-        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
-    }
-
-    if (!result && hm->older.tab) {
-        pthread_mutex_lock(&hm->ob_lock[olidx]);
-        from = cht_lookup(&hm->older, key, eq);
-        result = from ? *from : NULL;
-        pthread_mutex_unlock(&hm->ob_lock[olidx]);
-    }
-    spin_rw_runlock(&hm->st_lock);
-
-    chm_help_rehashing(hm);
-    qsbr_quiescent(&hm->gc, hm_tid);
-    return result;
-}
-
-bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *)) {
-    const size_t nlidx = node->hcode % BUCKET_LOCKS;
-    const size_t olidx = node->hcode % BUCKET_LOCKS;
-    HNode **from;
-    bool need_rehash = false, found = false, result = false;
-
-    spin_rw_rlock(&hm->st_lock);
-    if (!hm->newer.tab && !hm->older.tab) {
-        spin_rw_runlock(&hm->st_lock);
-        return NULL;
-    }
-
-    if (hm->newer.tab) {
-        pthread_mutex_lock(&hm->nb_lock[nlidx]);
-        from = cht_lookup(&hm->newer, node, eq);
-        found = from ? *from != NULL : false;
-        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
-    }
-
-    if (!hm->older.tab) {
-        // check whether we need to rehash again
-        size_t new_size = atomic_load_explicit(&hm->newer.size, memory_order_acquire);
-        const size_t threshold = (hm->newer.mask + 1) * MAX_LOAD;
-        if (new_size >= threshold) {
-            need_rehash = true;
-        }
-    } else if (!found) {
-        pthread_mutex_lock(&hm->ob_lock[olidx]);
-        from = cht_lookup(&hm->older, node, eq);
-        found = from ? *from != NULL : false;
-        pthread_mutex_unlock(&hm->ob_lock[olidx]);
-    }
-    spin_rw_runlock(&hm->st_lock);
-
-    if (need_rehash) {
-        spin_rw_wlock(&hm->st_lock);
-        if (!hm->older.tab) {
-            // check whether we need to rehash again
-            size_t new_size = atomic_load_explicit(&hm->newer.size, memory_order_acquire);
-            const size_t threshold = (hm->newer.mask + 1) * MAX_LOAD;
-            if (new_size >= threshold) {
-                chm_trigger_rehashing(hm);
-            }
-        }
-        spin_rw_wunlock(&hm->st_lock);
-    }
-
-    if (!found) {
-        pthread_mutex_lock(&hm->nb_lock[nlidx]);
-        cht_insert(&hm->newer, node, &hm->size);
-        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
-        result = true;
-    } else {
-        result = false;
-    }
-
-    chm_help_rehashing(hm); // migrate some keys
-    qsbr_quiescent(&hm->gc, hm_tid);
-    return result;
-}
-
-void chm_insert_unchecked(CHMap *hm, HNode *node) {
-    const size_t nlidx = node->hcode % BUCKET_LOCKS;
-    bool need_rehash = false;
-    spin_rw_rlock(&hm->st_lock);
-    if (!hm->newer.tab) {
-        spin_rw_runlock(&hm->st_lock);
-        return;
-    }
-    pthread_mutex_lock(&hm->nb_lock[nlidx]);
-    cht_insert(&hm->newer, node, &hm->size);
-    pthread_mutex_unlock(&hm->nb_lock[nlidx]);
-
-    if (!hm->older.tab) {
-        // check whether we need to rehash
-        size_t new_size = atomic_load_explicit(&hm->newer.size, memory_order_acquire);
-        const size_t threshold = (hm->newer.mask + 1) * MAX_LOAD;
-        if (new_size >= threshold) {
-            need_rehash = true;
-        }
-    }
-    spin_rw_runlock(&hm->st_lock);
-
-    if (need_rehash) {
-        spin_rw_wlock(&hm->st_lock);
-        if (!hm->older.tab) {
-            // check whether we need to rehash
-            size_t new_size = atomic_load_explicit(&hm->newer.size, memory_order_acquire);
-            const size_t threshold = (hm->newer.mask + 1) * MAX_LOAD;
-            if (new_size >= threshold) {
-                chm_trigger_rehashing(hm);
-            }
-        }
-        spin_rw_wunlock(&hm->st_lock);
-    }
-
-    chm_help_rehashing(hm); // migrate some keys
-    qsbr_quiescent(&hm->gc, hm_tid);
-}
-
-HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
-    const size_t nlidx = key->hcode % BUCKET_LOCKS;
-    const size_t olidx = key->hcode % BUCKET_LOCKS;
-    HNode *result = NULL, **from;
-    spin_rw_rlock(&hm->st_lock);
-    if (!hm->newer.tab && !hm->older.tab) {
-        spin_rw_runlock(&hm->st_lock);
-        return NULL;
-    }
-
-    if (hm->newer.tab) {
-        pthread_mutex_lock(&hm->nb_lock[nlidx]);
-        from = cht_lookup(&hm->newer, key, eq);
-        result = from ? cht_detach(&hm->newer, from, &hm->size) : NULL;
-        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
-    }
-
-    if (!result && hm->older.tab) {
-        pthread_mutex_lock(&hm->ob_lock[olidx]);
-        from = cht_lookup(&hm->older, key, eq);
-        result = from ? cht_detach(&hm->older, from, &hm->size) : NULL;
-        pthread_mutex_unlock(&hm->ob_lock[olidx]);
-    }
-    spin_rw_runlock(&hm->st_lock);
-
-    chm_help_rehashing(hm);
-    qsbr_quiescent(&hm->gc, hm_tid);
-    return result;
-}
-
 CHMap *chm_new(CHMap *hm) {
     if (!hm) {
         hm = calloc(1, sizeof(CHMap));
@@ -485,11 +376,13 @@ CHMap *chm_new(CHMap *hm) {
         hm->is_alloc = false;
     }
 
+    CHTable *newer = cht_init(NULL, DEFAULT_TABLE_SIZE);
+
     atomic_init(&hm->size, 0);
-    cht_init(&hm->newer, DEFAULT_TABLE_SIZE);
+    atomic_init(&hm->older, NULL);
+    atomic_init(&hm->newer, newer);
     qsbr_init(&hm->gc, 4096);
 
-    spin_rw_init(&hm->st_lock);
     for (int i = 0; i < BUCKET_LOCKS; i++) {
         pthread_mutex_init(&hm->nb_lock[i], NULL);
         pthread_mutex_init(&hm->ob_lock[i], NULL);
@@ -509,20 +402,164 @@ void chm_register(CHMap *hm) {
 }
 
 void chm_clear(CHMap *hm) {
-    free(hm->newer.tab);
-    free(hm->older.tab);
-    qsbr_destroy(&hm->gc);
+    // qsbr_destroy(&hm->gc);
+    CHTable *lnew = atomic_exchange_explicit(&hm->newer, NULL, memory_order_acquire);
+    CHTable *lold = atomic_exchange_explicit(&hm->older, NULL, memory_order_acquire);
+    if (lnew) {
+        cht_destroy(lnew);
+    }
+    if (lold) {
+        cht_destroy(lold);
+    }
     for (int i = 0; i < BUCKET_LOCKS; i++) {
         pthread_mutex_destroy(&hm->nb_lock[i]);
         pthread_mutex_destroy(&hm->ob_lock[i]);
     }
     bzero(hm, sizeof(HMap));
+    if (hm->is_alloc) {
+        free(hm);
+    }
+    hm_tid = -1;
+}
+
+HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
+    const size_t nlidx = key->hcode % BUCKET_LOCKS;
+    const size_t olidx = key->hcode % BUCKET_LOCKS;
+    CHTable *lnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+    CHTable *lold = atomic_load_explicit(&hm->older, memory_order_acquire);
+    HNode *result = NULL, **from;
+
+    if (!lnew && !lold)
+        return NULL;
+
+    if (lnew) {
+        pthread_mutex_lock(&hm->nb_lock[nlidx]);
+        from = cht_lookup(lnew, key, eq);
+        result = from ? *from : NULL;
+        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
+    }
+
+    if (!result && lold) {
+        pthread_mutex_lock(&hm->ob_lock[olidx]);
+        from = cht_lookup(lold, key, eq);
+        result = from ? *from : NULL;
+        pthread_mutex_unlock(&hm->ob_lock[olidx]);
+    }
+
+    chm_help_rehashing(hm);
+    qsbr_quiescent(&hm->gc, hm_tid);
+    return result;
+}
+
+bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *)) {
+    const size_t nlidx = node->hcode % BUCKET_LOCKS;
+    const size_t olidx = node->hcode % BUCKET_LOCKS;
+    CHTable *lnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+    CHTable *lold = atomic_load_explicit(&hm->older, memory_order_acquire);
+    HNode **from;
+    bool found = false, result = false;
+
+    if (!lnew && !lold)
+        return false;
+
+    if (lnew) {
+        pthread_mutex_lock(&hm->nb_lock[nlidx]);
+        from = cht_lookup(lnew, node, eq);
+        found = from ? *from != NULL : false;
+        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
+        if (!lold) {
+            // check whether we need to rehash
+            size_t nsize = atomic_load_explicit(&lnew->size, memory_order_acquire);
+            size_t nmask = atomic_load_explicit(&lnew->mask, memory_order_acquire);
+            const size_t threshold = (nmask + 1) * MAX_LOAD;
+            if (nsize >= threshold) {
+                chm_trigger_rehashing(hm);
+            }
+        } else if (!found) {
+            pthread_mutex_lock(&hm->ob_lock[olidx]);
+            from = cht_lookup(lold, node, eq);
+            found = from ? *from != NULL : false;
+            pthread_mutex_unlock(&hm->ob_lock[olidx]);
+        }
+    }
+
+    // Attempt insert if we don't found matching key.
+    if (!found) {
+        // Reload newer as trigger rehash may replace newer.
+        lnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+        pthread_mutex_lock(&hm->nb_lock[nlidx]);
+        cht_insert(lnew, node, &hm->size);
+        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
+        result = true;
+    }
+
+    chm_help_rehashing(hm); // migrate some keys
+    qsbr_quiescent(&hm->gc, hm_tid);
+    return result;
+}
+
+void chm_insert_unchecked(CHMap *hm, HNode *node) {
+    const size_t nlidx = node->hcode % BUCKET_LOCKS;
+    CHTable *lnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+    CHTable *lold = atomic_load_explicit(&hm->older, memory_order_acquire);
+    if (!lnew && !lold)
+        return;
+
+    if (lnew) {
+        pthread_mutex_lock(&hm->nb_lock[nlidx]);
+        cht_insert(lnew, node, &hm->size);
+        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
+        if (!lold) {
+            // check whether we need to rehash
+            size_t nsize = atomic_load_explicit(&lnew->size, memory_order_acquire);
+            size_t nmask = atomic_load_explicit(&lnew->mask, memory_order_acquire);
+            const size_t threshold = (nmask + 1) * MAX_LOAD;
+            if (nsize >= threshold) {
+                chm_trigger_rehashing(hm);
+            }
+        }
+    }
+
+    chm_help_rehashing(hm); // migrate some keys
+    qsbr_quiescent(&hm->gc, hm_tid);
+}
+
+HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
+    const size_t nlidx = key->hcode % BUCKET_LOCKS;
+    const size_t olidx = key->hcode % BUCKET_LOCKS;
+    CHTable *lnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+    CHTable *lold = atomic_load_explicit(&hm->older, memory_order_acquire);
+    HNode *result = NULL, **from;
+
+    if (!lnew && !lold)
+        return NULL;
+
+    if (lnew) {
+        pthread_mutex_lock(&hm->nb_lock[nlidx]);
+        from = cht_lookup(lnew, key, eq);
+        result = from ? cht_detach(lnew, from, &hm->size) : NULL;
+        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
+    }
+
+    if (!result && lold) {
+        pthread_mutex_lock(&hm->ob_lock[olidx]);
+        from = cht_lookup(lold, key, eq);
+        result = from ? cht_detach(lold, from, &hm->size) : NULL;
+        pthread_mutex_unlock(&hm->ob_lock[olidx]);
+    }
+
+    chm_help_rehashing(hm);
+    qsbr_quiescent(&hm->gc, hm_tid);
+    return result;
 }
 
 size_t chm_size(CHMap *hm) { return atomic_load_explicit(&hm->size, memory_order_relaxed); }
 
 void chm_foreach(CHMap *hm, bool (*f)(HNode *, void *), void *arg) {
-    spin_rw_rlock(&hm->st_lock);
-    cht_foreach(&hm->newer, hm->nb_lock, f, arg) && cht_foreach(&hm->older, hm->ob_lock, f, arg);
-    spin_rw_runlock(&hm->st_lock);
+    CHTable *lnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+    if (cht_foreach(lnew, hm->nb_lock, f, arg)) {
+        CHTable *lold = atomic_load_explicit(&hm->older, memory_order_acquire);
+        cht_foreach(lold, hm->ob_lock, f, arg);
+    }
+    qsbr_quiescent(&hm->gc, hm_tid);
 }
