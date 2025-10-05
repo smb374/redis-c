@@ -10,43 +10,38 @@ extern "C" {
 
 class EBRTest : public ::testing::Test {
 protected:
-    ebr_manager *m;
+    void SetUp() override {}
 
-    void SetUp() override { m = ebr_new(); }
-
-    void TearDown() override {
-        ebr_destroy(m);
-        free(m);
-    }
+    void TearDown() override { ebr_clear(); }
 };
 
 TEST_F(EBRTest, SingleThreadRegistration) {
-    ASSERT_TRUE(ebr_reg(m));
+    ASSERT_TRUE(ebr_reg());
     // In this model, the thread state is thread-local, so we can't inspect it directly.
     // We just verify that registration and unregistration don't crash.
-    ebr_unreg(m);
+    ebr_unreg();
 }
 
 TEST_F(EBRTest, SingleThreadAllocFree) {
-    ASSERT_TRUE(ebr_reg(m));
+    ASSERT_TRUE(ebr_reg());
 
     // Enter a critical section
-    ASSERT_TRUE(ebr_enter(m));
+    ASSERT_TRUE(ebr_enter());
 
     // Allocate and immediately free memory
     void *ptr = ebr_calloc(1, 64);
     ASSERT_NE(ptr, nullptr);
-    ebr_free(m, ptr);
+    ebr_free(ptr);
 
     // Leave the critical section
-    ebr_leave(m);
+    ebr_leave();
 
     // Try to reclaim any pending garbage
-    ebr_try_reclaim(m);
-    ebr_try_reclaim(m);
-    ebr_try_reclaim(m);
+    ebr_try_reclaim();
+    ebr_try_reclaim();
+    ebr_try_reclaim();
 
-    ebr_unreg(m);
+    ebr_unreg();
     // The test passes if it doesn't crash, implying the free was handled correctly.
 }
 
@@ -59,7 +54,7 @@ TEST_F(EBRTest, MultiThreadStress) {
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back([this, ops_per_thread, &all_threads_ready]() {
             // Each thread registers itself
-            ASSERT_TRUE(ebr_reg(m));
+            ASSERT_TRUE(ebr_reg());
 
             // Wait for a signal to start all threads at roughly the same time
             while (!all_threads_ready.load()) {
@@ -67,24 +62,24 @@ TEST_F(EBRTest, MultiThreadStress) {
 
             for (int j = 0; j < ops_per_thread; ++j) {
                 // Enter critical section
-                ASSERT_TRUE(ebr_enter(m));
+                ASSERT_TRUE(ebr_enter());
 
                 // Simulate work: allocate an object, then immediately free it.
                 void *ptr = ebr_calloc(1, 128);
                 ASSERT_NE(ptr, nullptr);
-                ebr_free(m, ptr);
+                ebr_free(ptr);
 
                 // Leave critical section
-                ebr_leave(m);
+                ebr_leave();
 
                 // Periodically, one thread might try to advance the epoch
                 if (j % 100 == 0) {
-                    ebr_try_reclaim(m);
+                    ebr_try_reclaim();
                 }
             }
 
             // Deregister when done
-            ebr_unreg(m);
+            ebr_unreg();
         });
     }
 
@@ -95,9 +90,9 @@ TEST_F(EBRTest, MultiThreadStress) {
     }
 
     // Final cleanup cycles
-    ebr_try_reclaim(m);
-    ebr_try_reclaim(m);
-    ebr_try_reclaim(m);
+    ebr_try_reclaim();
+    ebr_try_reclaim();
+    ebr_try_reclaim();
 
     // The test passes if it completes without crashing from memory errors.
 }
