@@ -74,7 +74,6 @@ public:
 
             // Clear the map to reset QSBR state
             chm_clear(g_chmap);
-            free(g_chmap);
             g_chmap = nullptr;
 
             // Reset initialization flags for next benchmark

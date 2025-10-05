@@ -38,6 +38,7 @@ add_library(common_lib STATIC
         src/cqueue.c
         src/thread_pool.c
         src/qsbr.c
+        src/ebr.c
 )
 target_include_directories(common_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include

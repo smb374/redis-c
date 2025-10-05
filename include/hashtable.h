@@ -47,20 +47,19 @@ typedef struct CHMap CHMap;
 #include <stdatomic.h>
 struct CHTable {
     HNode **tab;
-    atomic_size_t mask;
-    alignas(64) atomic_size_t size; // Use atomic so we don't need a lock for it.
+    alignas(64) atomic_size_t size, mask; // Use atomic so we don't need a lock for it.
     bool is_alloc;
 };
 
 typedef _Atomic(CHTable *) ACHTable;
 struct CHMap {
-    ACHTable newer, older;
-    bool is_alloc;
-    qsbr gc;
+    alignas(64) ACHTable newer, older;
     alignas(64) atomic_size_t migrate_pos;
     alignas(64) atomic_size_t size; // Use atomic so we don't need a lock for it.
     alignas(64) pthread_mutex_t nb_lock[BUCKET_LOCKS];
     alignas(64) pthread_mutex_t ob_lock[BUCKET_LOCKS];
+    qsbr gc;
+    bool is_alloc;
 };
 #endif
 

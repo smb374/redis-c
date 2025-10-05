@@ -138,8 +138,8 @@ TEST_F(CHMapTest, MultiThreadContendedInsert) {
 }
 
 TEST_F(CHMapTest, MultiThreadMixedReadWriteDelete) {
-    const int num_threads = 4;
-    const int ops_per_thread = 50000;
+    const int num_threads = 8;
+    const int ops_per_thread = 100000;
     std::vector<std::thread> threads;
 
     // Pre-fill with some data

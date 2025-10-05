@@ -1,6 +1,7 @@
 #ifndef QSBR_H
 #define QSBR_H
 
+#include <stdalign.h>
 #ifdef __cplusplus
 extern "C" {
 #endif /* ifndef __cplusplus */
@@ -26,10 +27,10 @@ typedef struct qsbr qsbr;
 #include <stdatomic.h>
 typedef _Atomic(uint64_t) atomic_u64;
 struct qsbr {
-    atomic_u64 quiescent, active;
-    atomic_uchar threads;
+    alignas(64) atomic_u64 quiescent, active;
+    alignas(64) atomic_uchar threads;
+    alignas(64) pthread_mutex_t lock;
     cqueue *curr, *prev;
-    pthread_mutex_t lock;
     bool is_alloc;
 };
 #endif

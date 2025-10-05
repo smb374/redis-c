@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,7 @@
 #include "utils.h"
 
 static __thread qsbr_tid hm_tid = -1;
+static __thread uint32_t write_counter = 0;
 
 // Internal Functions
 void ht_init(HTable *ht, size_t n) {
@@ -249,7 +251,7 @@ HNode *cht_detach(CHTable *ht, HNode **from, atomic_size_t *gsize) {
     return node;
 }
 
-void chm_help_rehashing(CHMap *hm) {
+bool chm_help_rehashing(CHMap *hm) {
     // We don't need to manipulate hm->size here as the migration itself doesn't
     // change the number of entries in the table.
 
@@ -266,10 +268,10 @@ void chm_help_rehashing(CHMap *hm) {
     while (nwork < REHASH_WORK) {
         lold = atomic_load_explicit(&hm->older, memory_order_acquire);
         if (!lold)
-            return;
+            return false;
         omask = atomic_load_explicit(&lold->mask, memory_order_acquire);
         if (!omask)
-            return;
+            return false;
         // Read phase
         size_t bidx = atomic_fetch_add_explicit(&hm->migrate_pos, 1, memory_order_acq_rel);
         if (bidx > omask) {
@@ -318,16 +320,21 @@ void chm_help_rehashing(CHMap *hm) {
         atomic_fetch_add_explicit(&lnew->size, cnt, memory_order_acq_rel);
     }
 
+    bool marked = false;
+
     if (lold) {
         osize = atomic_load_explicit(&lold->size, memory_order_acquire);
         if (!osize) {
             CHTable *cht = atomic_exchange_explicit(&hm->older, NULL, memory_order_acq_rel);
             if (cht) {
+                marked = true;
                 qsbr_quiescent(&hm->gc, hm_tid);
                 qsbr_alloc_cb(&hm->gc, cht_destroy_cb, cht);
             }
         }
     }
+
+    return marked;
 }
 
 void chm_trigger_rehashing(CHMap *hm) {
@@ -447,7 +454,6 @@ HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
     }
 
     chm_help_rehashing(hm);
-    qsbr_quiescent(&hm->gc, hm_tid);
     return result;
 }
 
@@ -493,8 +499,10 @@ bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *)) {
         result = true;
     }
 
-    chm_help_rehashing(hm); // migrate some keys
-    qsbr_quiescent(&hm->gc, hm_tid);
+    bool marked = chm_help_rehashing(hm); // migrate some keys
+    write_counter = (write_counter + 1) % 1000;
+    if (!marked && !write_counter)
+        qsbr_quiescent(&hm->gc, hm_tid);
     return result;
 }
 
@@ -520,8 +528,10 @@ void chm_insert_unchecked(CHMap *hm, HNode *node) {
         }
     }
 
-    chm_help_rehashing(hm); // migrate some keys
-    qsbr_quiescent(&hm->gc, hm_tid);
+    bool marked = chm_help_rehashing(hm); // migrate some keys
+    write_counter = (write_counter + 1) % 1000;
+    if (!marked && !write_counter)
+        qsbr_quiescent(&hm->gc, hm_tid);
 }
 
 HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
@@ -548,8 +558,10 @@ HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
         pthread_mutex_unlock(&hm->ob_lock[olidx]);
     }
 
-    chm_help_rehashing(hm);
-    qsbr_quiescent(&hm->gc, hm_tid);
+    bool marked = chm_help_rehashing(hm); // migrate some keys
+    write_counter = (write_counter + 1) % 1000;
+    if (!marked && !write_counter)
+        qsbr_quiescent(&hm->gc, hm_tid);
     return result;
 }
 
@@ -561,5 +573,4 @@ void chm_foreach(CHMap *hm, bool (*f)(HNode *, void *), void *arg) {
         CHTable *lold = atomic_load_explicit(&hm->older, memory_order_acquire);
         cht_foreach(lold, hm->ob_lock, f, arg);
     }
-    qsbr_quiescent(&hm->gc, hm_tid);
 }
