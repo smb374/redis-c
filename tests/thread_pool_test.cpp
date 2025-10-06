@@ -1,18 +1,14 @@
-// tests/thread_pool_test.cpp
+#include <cstdio>
 #include <gtest/gtest.h>
-#include <vector>
 #include <numeric>
-#include <unistd.h>
-#include <sys/eventfd.h>
+#include <vector>
 
-// The cqueue header is now C++-safe, but we still need the pool header
 extern "C" {
+#include "ev.h"
 #include "thread_pool.h"
-// We need the cqueue API for the test to pop from the result queue
-#include "cqueue.h"
 }
 
-// Define simple node structures for the test
+// --- Test Data Structures ---
 struct WorkNode : public cnode {
     int value;
 };
@@ -21,92 +17,94 @@ struct ResultNode : public cnode {
     int value;
 };
 
-// A simple function to be executed by the worker threads
-// It doubles the input value and cleans up the work node.
-cnode* double_value_work(cnode* work) {
-    if (!work) return nullptr;
-    WorkNode* w_node = static_cast<WorkNode*>(work);
-    
-    ResultNode* r_node = new ResultNode();
+// --- Test State (Global for Callback Access) ---
+static int g_items_received = 0;
+static int g_num_items = 0;
+static std::vector<bool> g_received_check;
+static struct ev_loop *g_main_loop = nullptr;
+
+// --- Worker Function ---
+// Doubles the input value and cleans up the work node.
+cnode *double_value_work(cnode *work) {
+    if (!work)
+        return nullptr;
+    auto *w_node = static_cast<WorkNode *>(work);
+    auto *r_node = new ResultNode();
     r_node->value = w_node->value * 2;
-    
-    delete w_node; // The worker is responsible for cleaning up the work item
+
+    delete w_node; // Worker cleans up the work item
     return r_node;
 }
 
+// --- Result Callback for the Main Thread ---
+// This function is called by the thread pool when a result is ready.
+bool test_res_cb(cnode *node) {
+    EXPECT_NE(node, nullptr);
+    auto *r_node = static_cast<ResultNode *>(node);
+
+    // Verify the work was done correctly
+    int original_value = r_node->value / 2;
+    EXPECT_EQ(r_node->value % 2, 0);
+    EXPECT_GE(original_value, 0);
+    EXPECT_LT(original_value, g_num_items);
+
+    // Check for duplicates
+    EXPECT_FALSE(g_received_check[original_value]);
+    g_received_check[original_value] = true;
+
+    g_items_received++;
+    delete r_node;
+
+    // If all items have been received, stop the main event loop.
+
+    return g_items_received == g_num_items;
+}
+
+// --- Test Fixture ---
 class ThreadPoolTest : public ::testing::Test {
 protected:
     ThreadPool pool;
 
     void SetUp() override {
-        pool_init(&pool);
+        // Initialize the thread pool with our callback
+        pool_init(&pool, test_res_cb);
+        g_main_loop = pool.loop;
+
+        // Reset global state for each test
+        g_items_received = 0;
+        g_num_items = 0;
+        g_received_check.clear();
     }
 
     void TearDown() override {
-        // Stop the threads first. This will block until they have all exited.
-        pool_stop(&pool);
-
-        // Clean up any remaining nodes in the result queue in case a test fails.
-        cnode* node;
-        if (pool.result_q) {
-            while ((node = cq_pop(pool.result_q))) {
-                delete static_cast<ResultNode*>(node);
-            }
-        }
-        
-        // Destroy cleans up queues and file descriptors
         pool_destroy(&pool);
+        g_main_loop = nullptr;
     }
 };
 
+// --- Test Case ---
 TEST_F(ThreadPoolTest, PostAndReceiveWork) {
-    const int num_items = 8000; // Enough to exercise all workers
+    g_num_items = 8000; // Set the total number of items for this test
+    g_received_check.assign(g_num_items, false);
+
     pool_start(&pool, double_value_work);
 
-    // Post work items
-    for (int i = 0; i < num_items; ++i) {
-        WorkNode* work = new WorkNode();
+    // Post all work items to the pool
+    for (int i = 0; i < g_num_items; ++i) {
+        auto *work = new WorkNode();
         work->value = i;
-        ASSERT_TRUE(pool_post(&pool, work));
+        pool_post(&pool, work);
     }
 
-    int items_received = 0;
-    std::vector<bool> received_check(num_items, false);
+    // Run the event loop. This will block until the callback calls ev_break.
+    ev_run(g_main_loop, 0);
 
-    while (items_received < num_items) {
-        uint64_t finished_count;
-        // Block and wait for the result eventfd to be signaled
-        ssize_t ret = read(pool.res_ev, &finished_count, sizeof(finished_count));
-        ASSERT_GT(ret, 0);
+    // The loop has exited, verify that all items were processed.
+    EXPECT_EQ(g_items_received, g_num_items);
 
-        // We were woken up, now pop from the result queue
-        for (uint64_t i = 0; i < finished_count; ++i) {
-            // The result_q is now a pointer, so we pass it directly to cq_pop
-            cnode* node = cq_pop(pool.result_q);
-            ASSERT_NE(node, nullptr);
-            
-            ResultNode* r_node = static_cast<ResultNode*>(node);
-            
-            // Verify the work was done correctly
-            int original_value = r_node->value / 2;
-            EXPECT_EQ(r_node->value % 2, 0);
-            ASSERT_GE(original_value, 0);
-            ASSERT_LT(original_value, num_items);
-
-            // Check for duplicates
-            ASSERT_FALSE(received_check[original_value]);
-            received_check[original_value] = true;
-
-            items_received++;
-            delete r_node;
-        }
-    }
-
-    EXPECT_EQ(items_received, num_items);
-    
     // Final check to ensure all values were received
-    for(int i = 0; i < num_items; ++i) {
-        ASSERT_TRUE(received_check[i]);
+    for (int i = 0; i < g_num_items; ++i) {
+        ASSERT_TRUE(g_received_check[i]);
     }
 }
 

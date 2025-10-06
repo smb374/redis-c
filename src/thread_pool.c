@@ -3,146 +3,115 @@
 //
 #include "thread_pool.h"
 
-#include <errno.h>
 #include <pthread.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <sys/eventfd.h>
-#include <sys/param.h>
 
-void pool_init(ThreadPool *pool) {
-    pool->res_ev = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-    if (pool->res_ev == -1) {
-        perror("eventfd");
-        exit(EXIT_FAILURE);
+#include "cqueue.h"
+#include "ev.h"
+
+static pthread_barrier_t barrier;
+
+void pool_cb(EV_P_ ev_async *w, const int revents) {
+    ThreadPool *pool = w->data;
+    cnode *p;
+    bool res = false;
+    while ((p = cq_pop(pool->result_q)) && !res) {
+        res = pool->res_cb(p);
     }
-    for (int i = 0; i < WORKERS; i++) {
-        pool->worker_evs[i] = eventfd(0, EFD_CLOEXEC);
-        if (pool->worker_evs[i] == -1) {
-            perror("eventfd");
-            exit(EXIT_FAILURE);
-        }
+    if (res) {
+        ev_async_stop(loop, &pool->rev);
+        ev_break(loop, EVBREAK_ALL);
+        pool_stop(pool);
     }
-    for (int i = 0; i < WORKERS; i++) {
-        pool->worker_qs[i] = cq_init(NULL, QUEUESIZE);
-    }
-    pool->result_q = cq_init(NULL, QUEUESIZE * WORKERS);
-    pool->idx = 0;
 }
 
-struct worker_arg {
-    cqueue *q, *rq;
-    int ev, rev, id;
-    cnode * (*f)(cnode *);
-};
+void worker_cb(EV_P_ ev_async *w, const int revents) {
+    wctx *ctx = w->data;
+    cnode *p, *res;
+    while ((p = cq_pop(ctx->q))) {
+        if (p == (cnode *) STOP_MAGIC) {
+            ev_async_stop(loop, w);
+            ev_break(loop, EVBREAK_ALL);
+            return;
+        }
+        res = ctx->f(p);
+        cq_put(ctx->rq, res);
+        ev_async_send(ctx->master, ctx->rev);
+    }
+}
 
 void *worker_f(void *arg) {
-    const struct worker_arg *w = (struct worker_arg *) arg;
-    uint64_t works = 0;
-    ssize_t ret;
-    int err;
+    wctx *ctx = (wctx *) arg;
 
-    for (;;) {
-        // Get number of works need to be collected from q
-        for (;;) {
-            errno = 0;
-            ret = read(w->ev, &works, sizeof(uint64_t));
-            err = errno;
-            if (ret < 0) {
-                if (err == EINTR)
-                    continue;
-                perror("read()");
-                goto EPILOGUE;
-            }
-            break;
-        }
-        if (works == 0xDEADBEEFCAFEBEEF) {
-            goto EPILOGUE;
-        }
+    ctx->loop = ev_loop_new(0);
+    ev_async_init(&ctx->wev, worker_cb);
+    ctx->wev.data = ctx;
+    ev_async_start(ctx->loop, &ctx->wev);
 
-        uint64_t processed = 0;
-        cnode *node;
-        while ((node = cq_pop(w->q))) {
-            cnode *rnode = w->f(node);
-            // Put finished work to rq
-            cq_put(w->rq, rnode);
-            processed++;
-        }
+    pthread_barrier_wait(&barrier);
 
-        for (;;) {
-            errno = 0;
-            ret = write(w->rev, &processed, sizeof(uint64_t));
-            err = errno;
-            if (ret < 0) {
-                if (err == EINTR)
-                    continue;
-                perror("write()");
-                goto EPILOGUE;
-            }
-            break;
-        }
-    }
-
-EPILOGUE:
-    free((void *) w);
+    ev_run(ctx->loop, 0);
     return NULL;
 }
 
-void pool_start(ThreadPool *pool, cnode * (*f)(cnode *)) {
+void pool_init(ThreadPool *pool, bool (*res_cb)(cnode *)) {
+    if (!pool)
+        return;
+    pthread_barrier_init(&barrier, NULL, WORKERS + 1);
+    pool->rr_idx = 0;
+    pool->res_cb = res_cb;
+    // get default Loop
+    // NOTE: it should be main() calling ev_run on the default loop.
+    pool->loop = ev_default_loop(0);
+    // setup rev
+    ev_async_init(&pool->rev, pool_cb);
+    pool->rev.data = pool;
+    ev_async_start(pool->loop, &pool->rev);
+    // setup result queue
+    pool->result_q = cq_init(NULL, QUEUESIZE * WORKERS);
+}
+void pool_start(ThreadPool *pool, cnode *(*f)(cnode *) ) {
     for (int i = 0; i < WORKERS; i++) {
-        struct worker_arg *w = calloc(1, sizeof(struct worker_arg));
+        wctx *w = calloc(1, sizeof(wctx));
+
         w->id = i;
-        w->q = pool->worker_qs[i];
+        w->rev = &pool->rev;
+        w->q = cq_init(NULL, QUEUESIZE);
         w->rq = pool->result_q;
-        w->ev = pool->worker_evs[i];
-        w->rev = pool->res_ev;
         w->f = f;
+        w->master = pool->loop;
+        pthread_create(&w->thread, NULL, worker_f, w);
 
-        pthread_create(&pool->workers[i], NULL, worker_f, w);
+        pool->workers[i] = w;
     }
+    pthread_barrier_wait(&barrier);
 }
-
-bool pool_post(ThreadPool *pool, cnode *work) {
-    cq_put(pool->worker_qs[pool->idx], work);
-    const uint64_t val = 1;
-    for (;;) {
-        errno = 0;
-        const ssize_t ret = write(pool->worker_evs[pool->idx], &val, sizeof(uint64_t));
-        const int err = errno;
-        if (ret < 0) {
-            if (err == EINTR)
-                continue;
-            perror("write");
-            return false;
-        }
-        break;
-    }
-    pool->idx = (pool->idx + 1) % WORKERS;
-    return true;
+void pool_post(ThreadPool *pool, cnode *work) {
+    wctx *w = pool->workers[pool->rr_idx];
+    pool->rr_idx = (pool->rr_idx + 1) % WORKERS;
+    cq_put(w->q, work);
+    ev_async_send(w->loop, &w->wev);
 }
-
 void pool_stop(ThreadPool *pool) {
-    const uint64_t val = 0xDEADBEEFCAFEBEEF;
     for (int i = 0; i < WORKERS; i++) {
-        // Closing the fd will cause the blocking read() in the worker to fail.
-        write(pool->worker_evs[i], &val, sizeof(uint64_t));
+        wctx *w = pool->workers[i];
+        cq_put(w->q, (cnode *) STOP_MAGIC);
+        ev_async_send(w->loop, &w->wev);
     }
 
     for (int i = 0; i < WORKERS; i++) {
-        pthread_join(pool->workers[i], NULL);
+        wctx *w = pool->workers[i];
+        pool->workers[i] = NULL;
+
+        pthread_join(w->thread, NULL);
+        ev_loop_destroy(w->loop);
+        cq_destroy(w->q);
+        free(w);
     }
 }
-
 void pool_destroy(ThreadPool *pool) {
-    for (int i = 0; i < WORKERS; i++) {
-        close(pool->worker_evs[i]);
-        pool->worker_evs[i] = -1;
-        cq_destroy(pool->worker_qs[i]);
-        pool->worker_qs[i] = NULL;
-    }
-    close(pool->res_ev);
-    pool->res_ev = -1;
+    ev_async_stop(pool->loop, &pool->rev);
     cq_destroy(pool->result_q);
-    pool->result_q = NULL;
 }

@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
 enable_testing()
 
 include(FetchContent)
+# Google Test
 FetchContent_Declare(
         googletest
         URL https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz
@@ -22,6 +23,14 @@ FetchContent_Declare(
         GIT_TAG        v1.8.0
 )
 FetchContent_MakeAvailable(googlebenchmark)
+# libev
+include(FetchContent)
+FetchContent_Declare(
+    ev
+    GIT_REPOSITORY  https://github.com/sjinks/libev-cmake
+    GIT_TAG         v4.33
+)
+FetchContent_MakeAvailable(ev)
 
 # Bundle all files into a lib except for executable files.
 add_library(common_lib STATIC
@@ -40,6 +49,7 @@ add_library(common_lib STATIC
         src/qsbr.c
         src/ebr.c
 )
+target_link_libraries(common_lib PUBLIC ev::ev)
 target_include_directories(common_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
