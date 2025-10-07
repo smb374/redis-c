@@ -14,7 +14,6 @@ extern "C" {
 #include <stdint.h>
 #include <sys/socket.h>
 
-#include "hashtable.h"
 #include "list.h"
 #include "ringbuf.h"
 
@@ -30,7 +29,7 @@ enum ConnState {
 };
 typedef enum ConnState ConnState;
 
-struct Conn2 {
+struct Conn {
     DList node;
 
     int fd;
@@ -39,53 +38,20 @@ struct Conn2 {
     uint64_t last_active;
     RingBuf income, outgo;
 };
+typedef struct Conn Conn;
 
 struct SrvConn {
     int fd;
     ev_io iow;
     ev_timer idlew;
 };
+typedef struct SrvConn SrvConn;
 
-ConnState try_one_req2(struct Conn2 *); // Blanket, rely external impl
-void srv_conn_init(struct SrvConn *c, struct sockaddr_in *addr, socklen_t len);
-struct Conn2 *conn2_init(struct Conn2 *c, int fd);
-void conn2_clear(struct Conn2 *c);
-
-// Obsolete, to be cleaned
-// -----------------------------
-struct Conn {
-    HNode pool_node;
-    DList list_node;
-
-    int fd;
-    bool closing;
-    uint32_t flags;
-    uint64_t last_active;
-    RingBuf income, outgo;
-};
-typedef struct Conn Conn;
-
-struct ConnManager {
-    HMap pool;
-    DList idle;
-    DList closing;
-};
-typedef struct ConnManager ConnManager;
-
-void conn_init(Conn *conn, int fd);
+ConnState try_one_req(Conn *); // Blanket, rely external impl
+void srv_init(SrvConn *c, int fd, const struct sockaddr *addr, socklen_t len);
+void srv_clear(SrvConn *c);
+Conn *conn_init(Conn *c, int fd);
 void conn_clear(Conn *c);
-bool conn_eq(HNode *le, HNode *re);
-
-void cm_init(ConnManager *cm);
-void cm_destroy(ConnManager *cm);
-Conn *cm_get_conn(ConnManager *cm, int fd);
-void cm_mark_closing(ConnManager *cm, Conn *conn);
-void cm_clean_closing(ConnManager *cm);
-
-ConnState handle_read(Conn *c, DList *idle, ConnState (*try_one_req)(struct Conn *));
-ConnState handle_write(Conn *c, DList *idle);
-ConnState handle_accept(ConnManager *cm, int epfd, int srv_fd);
-// -----------------------------
 
 #ifdef __cplusplus
 }
