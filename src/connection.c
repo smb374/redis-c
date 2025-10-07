@@ -141,6 +141,13 @@ void srv_clear(SrvConn *c) {
     struct ev_loop *loop = ev_default_loop(0);
     ev_io_stop(loop, &c->iow);
     ev_timer_stop(loop, &c->idlew);
+
+    while (!dlist_empty(&idles)) {
+        Conn *c = container_of(idles.next, Conn, node);
+        fprintf(stderr, "Closing connection %d\n", c->fd);
+        conn_clear(c);
+    }
+
     close(c->fd);
 }
 
