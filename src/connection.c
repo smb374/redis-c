@@ -105,6 +105,7 @@ static void idle_timer_cb(EV_P_ ev_timer *w, const int revents) {
             ev_timer_stop(EV_A_ w);
             ev_timer_set(w, (double) (next - now) / 1000., TIMEOUT_S);
             ev_timer_start(EV_A_ w);
+            return;
         }
         fprintf(stderr, "Connection %d timed out, closing...\n", c->fd);
         conn_clear(c);
