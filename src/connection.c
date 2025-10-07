@@ -103,13 +103,14 @@ static void idle_timer_cb(EV_P_ ev_timer *w, const int revents) {
         next = c->last_active + TIMEOUT;
         if (next >= now) {
             ev_timer_stop(EV_A_ w);
-            ev_timer_set(w, (double) (next - now) / 1000., TIMEOUT_S);
+            ev_timer_set(w, (double) (next - now) / 1000., 0.);
             ev_timer_start(EV_A_ w);
             return;
         }
         fprintf(stderr, "Connection %d timed out, closing...\n", c->fd);
         conn_clear(c);
     }
+    ev_timer_set(w, TIMEOUT_S, 0.);
 }
 
 void srv_init(SrvConn *c, int fd, const struct sockaddr *addr, socklen_t len) {
@@ -130,7 +131,7 @@ void srv_init(SrvConn *c, int fd, const struct sockaddr *addr, socklen_t len) {
     ev_io_init(&c->iow, accept_cb, fd, EV_READ);
     c->iow.data = c;
     ev_io_start(loop, &c->iow);
-    ev_timer_init(&c->idlew, idle_timer_cb, TIMEOUT_S, TIMEOUT_S);
+    ev_timer_init(&c->idlew, idle_timer_cb, TIMEOUT_S, 0.);
     c->idlew.data = c;
     ev_timer_start(loop, &c->idlew);
 }
