@@ -25,7 +25,7 @@ struct wctx {
     // self loop
     struct ev_loop *loop, *master;
     // async watchers
-    struct ev_async *rev, wev;
+    ev_async *rev, wev;
     // in & out queues
     cqueue *q, *rq;
     // process f
@@ -37,7 +37,7 @@ struct ThreadPool {
     size_t rr_idx;
     bool (*res_cb)(cnode *);
     struct ev_loop *loop;
-    struct ev_async rev;
+    ev_async rev;
     cqueue *result_q;
     wctx *workers[WORKERS];
 };

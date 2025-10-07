@@ -43,10 +43,8 @@ typedef struct Entry Entry;
 struct KVStore {
     Heap expire;
     HMap store;
-    ConnManager manager;
 };
 typedef struct KVStore KVStore;
-
 
 Entry *entry_new(const vstr *key, uint32_t type);
 bool entry_eq(HNode *ln, HNode *rn);

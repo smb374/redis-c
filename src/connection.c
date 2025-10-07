@@ -2,50 +2,185 @@
 // Created by poyehchen on 9/26/25.
 //
 #include "connection.h"
-#include "list.h"
-#include "utils.h"
 
+#include <assert.h>
 #include <errno.h>
-#include <fcntl.h>
+#include <ev.h>
 #include <netinet/in.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
-#include <sys/epoll.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
+#include "list.h"
+#include "ringbuf.h"
+#include "utils.h"
 
-bool conn_eq(HNode *le, HNode *re) {
-    const Conn *lc = container_of(le, Conn, pool_node);
-    const Conn *rc = container_of(re, Conn, pool_node);
-    return lc->fd == rc->fd;
+// idles will be at tail, use idles.next to access oldest.
+static DList idles = {&idles, &idles};
+
+static ConnState handle_read2(struct Conn2 *c);
+static ConnState handle_write2(struct Conn2 *c);
+static ConnState handle_accept2(struct SrvConn *c);
+
+static void conn2_cb(EV_P_ ev_io *w, const int revents) {
+    struct Conn2 *c = w->data;
+    int events;
+
+    // Try at most 128 read/writes to prevent hogging
+    if (w->events & EV_READ) {
+        for (int i = 0; i < 128; i++) {
+            ConnState s = handle_read2(c); // Will execute handle_write2 if there is data.
+            switch (s) {
+                case OK: // read/write OK
+                case WAIT: // nop for read, might from write but don't care here
+                    break;
+                case AGAIN: // read/write return EAGAIN
+                    goto WRITE_PHASE;
+                case CLOSE:
+                    goto CLOSE;
+            }
+        }
+    }
+
+WRITE_PHASE:
+    if (w->events & EV_WRITE) {
+        for (int i = 0; i < 128; i++) {
+            ConnState s = handle_write2(c);
+            switch (s) {
+                case OK: // write OK
+                    break;
+                case WAIT: // need more data
+                case AGAIN: // write returns EAGAIN
+                    goto EXIT;
+                case CLOSE: // connection need close
+                    goto CLOSE;
+            }
+        }
+    }
+
+EXIT:
+    events = EV_READ | (rb_size(&c->outgo) > 0 ? EV_WRITE : 0);
+    if (w->events != events) {
+        ev_io_stop(EV_A_ w);
+        ev_io_set(w, c->fd, events);
+        ev_io_start(EV_A_ w);
+    }
+    return;
+
+CLOSE:
+    conn2_clear(c);
 }
 
-void conn_init(Conn *conn, const int fd) {
-    if (!conn)
+static void accept_cb(EV_P_ ev_io *w, const int revents) {
+    struct SrvConn *c = w->data;
+
+    if (w->events & EV_READ) {
+        // Accept at most 128 connections to prevent hogging.
+        for (int i = 0; i < 128; i++) {
+            ConnState s = handle_accept2(c);
+            switch (s) {
+                case OK: // continue accept next connection.
+                case WAIT: // nop for accept
+                    break;
+                case AGAIN: // wait next notif
+                    return;
+                case CLOSE: // conn close
+                    ev_io_stop(EV_A_ w);
+                    close(c->fd);
+                    return;
+            }
+        }
+    }
+}
+
+static void idle_timer_cb(EV_P_ ev_timer *w, const int revents) {
+    uint64_t now = get_clock_ms(), next = 0;
+    while (!dlist_empty(&idles)) {
+        struct Conn2 *c = container_of(idles.next, struct Conn2, node);
+        next = c->last_active + TIMEOUT;
+        if (next >= now) {
+            return;
+        }
+        fprintf(stderr, "Connection %d timed out, closing...\n", c->fd);
+        conn2_clear(c);
+    }
+}
+
+void srv_conn_init(struct SrvConn *c, struct sockaddr_in *addr, socklen_t len) {
+    // No alloc as SrvConn should be in bss or main.
+    if (!c)
         return;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        die("socket()");
+    }
+    set_reuseaddr(fd);
+    if (bind(fd, (struct sockaddr *) addr, len) < 0) {
+        die("bind()");
+    }
+    set_nonblock(fd);
+    if (listen(fd, SOMAXCONN) < 0) {
+        die("listen()");
+    }
 
-    conn->fd = fd;
-    rb_init(&conn->income, INIT_BUFFER_SIZE);
-    rb_init(&conn->outgo, INIT_BUFFER_SIZE);
-    conn->flags = 0;
-    conn->last_active = get_clock_ms();
-    conn->pool_node.hcode = int_hash_rapid((uint64_t) fd);
-    dlist_init(&conn->list_node);
+    struct ev_loop *loop = ev_default_loop(0);
+    ev_io_init(&c->iow, accept_cb, fd, EV_READ);
+    ev_io_start(loop, &c->iow);
+    ev_timer_init(&c->idlew, idle_timer_cb, TIMEOUT_S, TIMEOUT_S);
+    ev_timer_start(loop, &c->idlew);
 }
 
-void conn_clear(Conn *c) {
+void srv_conn_clear(struct SrvConn *c) {
     if (!c)
         return;
 
-    dlist_detach(&c->list_node);
+    struct ev_loop *loop = ev_default_loop(0);
+    ev_io_stop(loop, &c->iow);
+    ev_timer_stop(loop, &c->idlew);
+}
+
+struct Conn2 *conn2_init(struct Conn2 *c, const int fd) {
+    if (!c) {
+        c = calloc(1, sizeof(struct Conn2));
+        assert(c);
+        c->is_alloc = true;
+    } else {
+        c->is_alloc = false;
+    }
+
+    c->fd = fd;
+    c->last_active = get_clock_ms();
+    rb_init(&c->income, INIT_BUFFER_SIZE);
+    rb_init(&c->outgo, INIT_BUFFER_SIZE);
+    dlist_init(&c->node);
+    dlist_insert_before(&idles, &c->node);
+
+    struct ev_loop *loop = ev_default_loop(0);
+    ev_io_init(&c->iow, conn2_cb, fd, EV_READ);
+    c->iow.data = c;
+    ev_io_start(loop, &c->iow);
+
+    return c;
+}
+
+void conn2_clear(struct Conn2 *c) {
+    if (!c)
+        return;
+
+    dlist_detach(&c->node);
+    struct ev_loop *loop = ev_default_loop(0);
+    ev_io_stop(loop, &c->iow);
     close(c->fd);
     rb_destroy(&c->income);
     rb_destroy(&c->outgo);
-    free(c);
+    if (c->is_alloc)
+        free(c);
 }
 
-ConnState handle_read(Conn *c, DList *idle, ConnState (*try_one_req)(Conn *)) {
+static ConnState handle_read2(struct Conn2 *c) {
     uint8_t buf[INIT_BUFFER_SIZE];
     errno = 0;
     const ssize_t ret = read(c->fd, buf, INIT_BUFFER_SIZE);
@@ -54,7 +189,7 @@ ConnState handle_read(Conn *c, DList *idle, ConnState (*try_one_req)(Conn *)) {
             case EAGAIN:
                 return AGAIN;
             case EINTR:
-                return handle_read(c, idle, try_one_req);
+                return handle_read2(c);
             default:
                 perror("read()");
                 return CLOSE;
@@ -68,8 +203,8 @@ ConnState handle_read(Conn *c, DList *idle, ConnState (*try_one_req)(Conn *)) {
         return CLOSE;
     }
     c->last_active = get_clock_ms();
-    dlist_detach(&c->list_node);
-    dlist_insert_before(idle, &c->list_node);
+    dlist_detach(&c->node);
+    dlist_insert_before(&idles, &c->node);
 
     const size_t sz = rb_size(&c->income);
     if ((size_t) ret > c->income.cap - 1 - sz) {
@@ -78,18 +213,18 @@ ConnState handle_read(Conn *c, DList *idle, ConnState (*try_one_req)(Conn *)) {
     rb_write(&c->income, buf, ret);
 
     ConnState s;
-    while ((s = try_one_req(c)) == OK)
+    while ((s = try_one_req2(c)) == OK)
         ;
 
     if (s == CLOSE)
         return CLOSE;
     if (rb_size(&c->outgo) > 0)
-        return handle_write(c, idle);
+        return handle_write2(c);
 
     return OK;
 }
 
-ConnState handle_write(Conn *c, DList *idle) {
+static ConnState handle_write2(struct Conn2 *c) {
     if (rb_empty(&c->outgo))
         return WAIT;
 
@@ -116,48 +251,24 @@ ConnState handle_write(Conn *c, DList *idle) {
         consumed += ret;
     }
     c->last_active = get_clock_ms();
-    dlist_detach(&c->list_node);
-    dlist_insert_before(idle, &c->list_node);
+    dlist_detach(&c->node);
+    dlist_insert_before(&idles, &c->node);
     rb_consume(&c->outgo, consumed);
     return OK;
 }
 
-void cm_init(ConnManager *cm) {
-    bzero(&cm->pool, sizeof(HMap));
-    dlist_init(&cm->idle);
-    dlist_init(&cm->closing);
-}
 
-void cm_destroy(ConnManager *cm) {
-    HTable *tables[] = {&cm->pool.newer, &cm->pool.older};
-    for (int i = 0; i < 2; i++) {
-        if (tables[i]->tab) {
-            for (size_t j = 0; j <= tables[i]->mask; j++) {
-                HNode *node = tables[i]->tab[j];
-                while (node) {
-                    HNode *next = node->next; // Save next before delete
-                    Conn *c = container_of(node, Conn, pool_node);
-                    conn_clear(c);
-                    node = next;
-                }
-            }
-        }
-    }
-
-    hm_clear(&cm->pool);
-}
-
-ConnState handle_accept(ConnManager *cm, const int epfd, const int srv_fd) {
+static ConnState handle_accept2(struct SrvConn *c) {
     struct sockaddr_in caddr;
     socklen_t addrlen = sizeof(struct sockaddr_in);
     errno = 0;
-    const int cfd = accept(srv_fd, (struct sockaddr *) &caddr, &addrlen);
+    const int cfd = accept(c->fd, (struct sockaddr *) &caddr, &addrlen);
     if (cfd < 0) {
         switch (errno) {
             case EAGAIN:
                 return AGAIN;
             case EINTR:
-                return handle_accept(cm, epfd, srv_fd);
+                return handle_accept2(c);
             default:
                 perror("accept()");
                 return CLOSE;
@@ -166,52 +277,8 @@ ConnState handle_accept(ConnManager *cm, const int epfd, const int srv_fd) {
         const uint32_t ip = caddr.sin_addr.s_addr;
         fprintf(stderr, "new client from %u.%u.%u.%u:%u\n", ip & 255, (ip >> 8) & 255, (ip >> 16) & 255, ip >> 24,
                 ntohs(caddr.sin_port));
-        const int flags = fcntl(cfd, F_GETFL);
-        (void) fcntl(cfd, F_SETFL, flags | O_NONBLOCK);
-        struct epoll_event ev;
-        ev.data.fd = cfd;
-        ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-        for (;;) {
-            errno = 0;
-            const int ret = epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &ev);
-            if (ret < 0) {
-                if (errno == EAGAIN || errno == EINTR)
-                    continue;
-                perror("handle_accept(): epoll_ctl()");
-                return CLOSE;
-            }
-            break;
-        }
-        Conn *conn = calloc(1, sizeof(*conn));
-        conn_init(conn, cfd);
-        HNode *prev = hm_insert(&cm->pool, &conn->pool_node, conn_eq);
-        if (prev) {
-            conn_clear(container_of(prev, Conn, pool_node));
-        }
-        dlist_insert_before(&cm->idle, &conn->list_node);
+        set_nonblock(cfd);
+        conn2_init(NULL, cfd);
         return OK;
-    }
-}
-
-Conn *cm_get_conn(ConnManager *cm, const int fd) {
-    Conn key;
-    key.fd = fd;
-    key.pool_node.hcode = int_hash_rapid((uint64_t) fd);
-
-    HNode *entry = hm_lookup(&cm->pool, &key.pool_node, conn_eq);
-    return entry ? container_of(entry, Conn, pool_node) : NULL;
-}
-
-void cm_mark_closing(ConnManager *cm, Conn *conn) {
-    conn->closing = true;
-    dlist_detach(&conn->list_node);
-    dlist_insert_before(&cm->closing, &conn->list_node);
-}
-
-void cm_clean_closing(ConnManager *cm) {
-    while (!dlist_empty(&cm->closing)) {
-        Conn *c = container_of(cm->closing.next, Conn, list_node);
-        hm_delete(&cm->pool, &c->pool_node, conn_eq);
-        conn_clear(c);
     }
 }

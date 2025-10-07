@@ -56,10 +56,6 @@ void kv_set_ttl(KVStore *kv, Entry *e, int64_t ttl) {
 int32_t next_timer_ms(KVStore *kv) {
     const uint64_t now = get_clock_ms();
     uint64_t next = (uint64_t) -1;
-    if (!dlist_empty(&kv->manager.idle)) {
-        const Conn *c = container_of(kv->manager.idle.next, Conn, list_node);
-        next = c->last_active + TIMEOUT;
-    }
     if (kv->expire.len && kv->expire.nodes[0].val < next) {
         next = kv->expire.nodes[0].val;
     }
@@ -74,16 +70,6 @@ int32_t next_timer_ms(KVStore *kv) {
 }
 void process_timer(KVStore *kv) {
     const uint64_t now = get_clock_ms();
-    while (!dlist_empty(&kv->manager.idle)) {
-        Conn *c = container_of(kv->manager.idle.next, Conn, list_node);
-        const uint64_t next = c->last_active + TIMEOUT;
-        if (next >= now)
-            break;
-        fprintf(stderr, "closing idle connection: %d\n", c->fd);
-        hm_delete(&kv->manager.pool, &c->pool_node, conn_eq);
-        conn_clear(c);
-    }
-
     while (kv->expire.len && kv->expire.nodes[0].val < now) {
         Entry *e = container_of(kv->expire.nodes[0].ref, Entry, heap_idx);
         hm_delete(&kv->store, &e->node, entry_eq);
@@ -92,7 +78,6 @@ void process_timer(KVStore *kv) {
 }
 void kv_init(KVStore *kv) {
     bzero(&kv->store, sizeof(Heap));
-    cm_init(&kv->manager);
     heap_init(&kv->expire, 4096);
 }
 void kv_clear(KVStore *kv) {
@@ -112,7 +97,6 @@ void kv_clear(KVStore *kv) {
     }
 
     hm_clear(&kv->store);
-    cm_destroy(&kv->manager);
     heap_free(&kv->expire);
 }
 

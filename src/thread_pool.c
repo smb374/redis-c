@@ -3,17 +3,16 @@
 //
 #include "thread_pool.h"
 
+#include <ev.h>
 #include <pthread.h>
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 #include "cqueue.h"
-#include "ev.h"
 
 static pthread_barrier_t barrier;
 
-void pool_cb(EV_P_ ev_async *w, const int revents) {
+static void pool_cb(EV_P_ ev_async *w, const int revents) {
     ThreadPool *pool = w->data;
     cnode *p;
     bool res = false;
@@ -21,19 +20,19 @@ void pool_cb(EV_P_ ev_async *w, const int revents) {
         res = pool->res_cb(p);
     }
     if (res) {
-        ev_async_stop(loop, &pool->rev);
-        ev_break(loop, EVBREAK_ALL);
+        ev_async_stop(EV_A_ w);
+        ev_break(EV_A_ EVBREAK_ALL);
         pool_stop(pool);
     }
 }
 
-void worker_cb(EV_P_ ev_async *w, const int revents) {
+static void worker_cb(EV_P_ ev_async *w, const int revents) {
     wctx *ctx = w->data;
     cnode *p, *res;
     while ((p = cq_pop(ctx->q))) {
         if (p == (cnode *) STOP_MAGIC) {
-            ev_async_stop(loop, w);
-            ev_break(loop, EVBREAK_ALL);
+            ev_async_stop(EV_A_ w);
+            ev_break(EV_A_ EVBREAK_ALL);
             return;
         }
         res = ctx->f(p);
@@ -42,7 +41,7 @@ void worker_cb(EV_P_ ev_async *w, const int revents) {
     }
 }
 
-void *worker_f(void *arg) {
+static void *worker_f(void *arg) {
     wctx *ctx = (wctx *) arg;
 
     ctx->loop = ev_loop_new(0);

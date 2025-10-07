@@ -117,6 +117,23 @@ add_executable(qsbr_test tests/qsbr_test.cpp)
 target_link_libraries(qsbr_test PRIVATE common_lib gtest_main pthread)
 add_test(NAME qsbr_test COMMAND qsbr_test)
 
+set_tests_properties(
+        ringbuf_test
+        hashtable_test
+        parse_test
+        skiplist_test
+        zset_test
+        serialize_test
+        heap_test
+        kvstore_test
+        cqueue_test
+        thread_pool_test
+        chashmap_test
+        ebr_test
+        qsbr_test
+        PROPERTIES LABELS "Unit"
+)
+
 # Benchmarks
 ## chashmap_bench
 add_executable(chashmap_bench bench/chashmap_bench.cpp)
