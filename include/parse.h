@@ -1,6 +1,7 @@
 #ifndef PARSE_H
 #define PARSE_H
 
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -60,7 +61,8 @@ typedef struct Request Request;
 
 struct OwnedRequest {
     Request req;
-    const simple_req *base;
+    simple_req base;
+    bool is_alloc;
 };
 typedef struct OwnedRequest OwnedRequest;
 
@@ -68,7 +70,8 @@ bool str2dbl(const vstr *str, double *out);
 bool str2int(const vstr *str, int64_t *out);
 ssize_t parse_simple_req(RingBuf *rb, size_t sz, simple_req *out);
 void simple2req(const simple_req *sreq, Request *req);
-void simple2oreq(const simple_req *sreq, OwnedRequest *req);
+OwnedRequest *new_owned_req(OwnedRequest *oreq, RingBuf *rb, size_t sz);
+void owned_req_destroy(OwnedRequest *oreq);
 
 #ifdef __cplusplus
 }

@@ -6,9 +6,12 @@
 #include <ev.h>
 #include <pthread.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #include "cqueue.h"
+#include "strings.h"
+#include "utils.h"
 
 static pthread_barrier_t barrier;
 
@@ -20,6 +23,7 @@ static void pool_cb(EV_P_ ev_async *w, const int revents) {
         res = pool->res_cb(p);
     }
     if (res) {
+        logger(stderr, "INFO", "[master] Get stop condition, exiting...\n");
         ev_async_stop(EV_A_ w);
         ev_break(EV_A_ EVBREAK_ALL);
         pool_stop(pool);
@@ -30,7 +34,8 @@ static void worker_cb(EV_P_ ev_async *w, const int revents) {
     wctx *ctx = w->data;
     cnode *p, *res;
     while ((p = cq_pop(ctx->q))) {
-        if (p == (cnode *) STOP_MAGIC) {
+        if ((uint64_t) p == STOP_MAGIC) {
+            logger(stderr, "INFO", "[worker %d] Get STOP_MAGIC, exiting...\n", ctx->id);
             ev_async_stop(EV_A_ w);
             ev_break(EV_A_ EVBREAK_ALL);
             return;

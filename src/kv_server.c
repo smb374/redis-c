@@ -3,14 +3,12 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include "connection.h"
 #include "kvstore.h"
-#include "serialize.h"
+#include "parse.h"
 #include "utils.h"
 
 #define MAX_MSG 32 << 20
@@ -18,65 +16,37 @@
 
 SrvConn srv;
 KVStore g_data;
-ev_timer kv_timer;
 
-ConnState try_one_req(Conn *conn) {
-    if (rb_size(&conn->income) < 4)
+ConnState try_one_req(Conn *c) {
+    if (rb_size(&c->income) < 4)
         return WAIT;
     uint32_t len = 0;
-    rb_peek0(&conn->income, (uint8_t *) &len, 4);
+    rb_peek0(&c->income, (uint8_t *) &len, 4);
     if (len > MAX_MSG) {
-        msg("Message too long");
+        logger(stderr, "WARN", "[conn %d] Message too long\n", c->fd);
         return CLOSE;
     }
 
-    if (4 + len > rb_size(&conn->income))
+    if (4 + len > rb_size(&c->income))
         return WAIT;
-    rb_consume(&conn->income, 4);
+    rb_consume(&c->income, 4);
 
-    simple_req cmd;
-    if (parse_simple_req(&conn->income, len, &cmd) == -1) {
-        msg("Bad Request");
+    OwnedRequest *oreq = new_owned_req(NULL, &c->income, len);
+    if (!oreq) {
+        logger(stderr, "WARN", "[conn %d] Invalid request in input buffer\n", c->fd);
         return CLOSE;
     }
-    RingBuf buf;
-    rb_init(&buf, 4096);
 
-    do_req(&g_data, &cmd, &buf);
-    size_t resp_size = rb_size(&buf);
-    if (resp_size > MAX_MSG) {
-        rb_clear(&buf);
-        out_err(&buf, ERR_TOO_BIG, "message too long");
-        resp_size = rb_size(&buf);
-    }
-    write_u32(&conn->outgo, (uint32_t) resp_size);
-    out_buf(&conn->outgo, &buf);
-    rb_destroy(&buf);
-
-    for (int i = 0; i < cmd.argc; i++) {
-        vstr_destroy(cmd.argv[i]);
-    }
-    free(cmd.argv);
+    kv_dispatch(&g_data, c, oreq);
 
     return OK;
 }
 
 static void exit_cb(EV_P_ ev_signal *w, const int revents) {
-    msg("Received terminating signal. Performing graceful shutdown...");
-    ev_timer_stop(EV_A, &kv_timer);
+    logger(stderr, "INFO", "[signal] Got singal %d, Perform graceful shutdown...\n", w->signum);
+    kv_stop(&g_data);
     srv_clear(&srv);
-    ev_break(EV_A_ EVBREAK_ALL);
 }
-
-// static void kv_timer_cb(EV_P_ ev_timer *w, const int revents) {
-//     process_timer(&g_data);
-//     int32_t next = next_timer_ms(&g_data);
-//     if (next > 0) {
-//         ev_timer_stop(EV_A_ w);
-//         ev_timer_set(w, (double) next / 1000.0, 1.);
-//         ev_timer_start(EV_A_ w);
-//     }
-// }
 
 int main() {
     // Init KVStore.
@@ -101,9 +71,12 @@ int main() {
     addr.sin_addr.s_addr = htonl(0);
     addr.sin_port = htons(1234);
     srv_init(&srv, fd, (const struct sockaddr *) &addr, sizeof(struct sockaddr_in));
+    // Start thread pool
+    kv_start(&g_data);
     // Start loop
     ev_run(loop, 0);
     // Epilogue
-    msg("Exit main loop");
     kv_clear(&g_data);
+    ev_default_destroy();
+    logger(stderr, "INFO", "[main] Exit main loop\n");
 }

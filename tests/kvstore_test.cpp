@@ -1,12 +1,14 @@
 // /home/poyehchen/Projects/c/build_your_own_redis/tests/kvstore_test.cpp
 #include "kvstore.h"
 
+#include <cstdio>
 #include <gtest/gtest.h>
 #include <set>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
+#include "parse.h"
 #include "ringbuf.h"
 #include "serialize.h"
 #include "utils.h"
@@ -28,22 +30,19 @@ protected:
     }
 
     // Helper to create a simple_req from a vector of strings
-    simple_req create_req(const std::vector<std::string> &args) {
-        simple_req req;
-        req.argc = args.size();
-        req.argv = (vstr **) malloc(req.argc * sizeof(vstr *));
-        for (size_t i = 0; i < req.argc; ++i) {
-            req.argv[i] = vstr_new(args[i].c_str(), args[i].length());
+    static OwnedRequest create_req(const std::vector<std::string> &args) {
+        OwnedRequest oreq;
+        oreq.is_alloc = false;
+        oreq.base.argc = args.size();
+        oreq.base.argv = (vstr **) malloc(oreq.base.argc * sizeof(vstr *));
+        for (size_t i = 0; i < oreq.base.argc; ++i) {
+            oreq.base.argv[i] = vstr_new(args[i].c_str(), args[i].length());
         }
-        return req;
+        simple2req(&oreq.base, &oreq.req);
+        return oreq;
     }
 
-    void free_req(simple_req &req) {
-        for (size_t i = 0; i < req.argc; ++i) {
-            vstr_destroy(req.argv[i]);
-        }
-        free(req.argv);
-    }
+    static void free_req(OwnedRequest &req) { owned_req_destroy(&req); }
 
     // Helper to read and verify a string from the RingBuf
     std::string read_out_str() {
@@ -99,52 +98,65 @@ protected:
         rb_read(&out, (uint8_t *) &val, 8);
         return val;
     }
+
+    // Helper to create a heap-allocated OwnedRequest
+    static OwnedRequest *create_heap_req(const std::vector<std::string> &args) {
+        auto *oreq = (OwnedRequest *) calloc(1, sizeof(OwnedRequest));
+        oreq->is_alloc = true; // Mark for freeing by the worker
+        oreq->base.argc = args.size();
+        oreq->base.argv = (vstr **) malloc(oreq->base.argc * sizeof(vstr *));
+        for (size_t i = 0; i < oreq->base.argc; ++i) {
+            oreq->base.argv[i] = vstr_new(args[i].c_str(), args[i].length());
+        }
+        simple2req(&oreq->base, &oreq->req);
+        return oreq;
+    }
 };
 
 TEST_F(KVStoreTest, GetSetDel) {
     // SET key value
-    simple_req set_req = create_req({"set", "mykey", "myvalue"});
-    do_req(kv, &set_req, &out);
+    OwnedRequest set_req = create_req({"set", "mykey", "myvalue"});
+    do_owned_req(kv, &set_req, &out);
     verify_out_nil();
     free_req(set_req);
 
     // GET key
-    simple_req get_req = create_req({"get", "mykey"});
-    do_req(kv, &get_req, &out);
+    OwnedRequest get_req = create_req({"get", "mykey"});
+    do_owned_req(kv, &get_req, &out);
     verify_out_str("myvalue");
     free_req(get_req);
 
     // DEL key
-    simple_req del_req = create_req({"del", "mykey"});
-    do_req(kv, &del_req, &out);
+    OwnedRequest del_req = create_req({"del", "mykey"});
+    do_owned_req(kv, &del_req, &out);
     verify_out_int(1);
     free_req(del_req);
 
     // GET deleted key
-    simple_req get_after_del_req = create_req({"get", "mykey"});
-    do_req(kv, &get_after_del_req, &out);
+    OwnedRequest get_after_del_req = create_req({"get", "mykey"});
+    do_owned_req(kv, &get_after_del_req, &out);
     verify_out_nil();
     free_req(get_after_del_req);
 }
 
 TEST_F(KVStoreTest, KeysCommand) {
-    simple_req set_req1 = create_req({"set", "key1", "val1"});
-    do_req(kv, &set_req1, &out);
+    OwnedRequest set_req1 = create_req({"set", "key1", "val1"});
+    do_owned_req(kv, &set_req1, &out);
     rb_clear(&out);
     free_req(set_req1);
 
-    simple_req set_req2 = create_req({"set", "key2", "val2"});
-    do_req(kv, &set_req2, &out);
+    OwnedRequest set_req2 = create_req({"set", "key2", "val2"});
+    do_owned_req(kv, &set_req2, &out);
     rb_clear(&out);
     free_req(set_req2);
 
-    simple_req zadd_req = create_req({"zadd", "zkey1", "10", "member1"});
-    do_req(kv, &zadd_req, &out);
+    OwnedRequest zadd_req = create_req({"zadd", "zkey1", "10", "member1"});
+    do_owned_req(kv, &zadd_req, &out);
     rb_clear(&out);
     free_req(zadd_req);
 
-    simple_req keys_req = create_req({"keys"});
-    do_req(kv, &keys_req, &out);
+    OwnedRequest keys_req = create_req({"keys"});
+    do_owned_req(kv, &keys_req, &out);
 
     uint8_t tag;
     rb_read(&out, &tag, 1);
@@ -168,14 +180,14 @@ TEST_F(KVStoreTest, KeysCommand) {
 
 TEST_F(KVStoreTest, ZSetOperations) {
     // ZADD zkey 100 member1
-    simple_req zadd_req = create_req({"zadd", "myzset", "100", "member1"});
-    do_req(kv, &zadd_req, &out);
+    OwnedRequest zadd_req = create_req({"zadd", "myzset", "100", "member1"});
+    do_owned_req(kv, &zadd_req, &out);
     verify_out_int(1);
     free_req(zadd_req);
 
     // ZSCORE zkey member1
-    simple_req zscore_req = create_req({"zscore", "myzset", "member1"});
-    do_req(kv, &zscore_req, &out);
+    OwnedRequest zscore_req = create_req({"zscore", "myzset", "member1"});
+    do_owned_req(kv, &zscore_req, &out);
     uint8_t tag;
     rb_read(&out, &tag, 1);
     ASSERT_EQ(tag, TAG_DBL);
@@ -185,43 +197,43 @@ TEST_F(KVStoreTest, ZSetOperations) {
     free_req(zscore_req);
 
     // ZREM zkey member1
-    simple_req zrem_req = create_req({"zrem", "myzset", "member1"});
-    do_req(kv, &zrem_req, &out);
+    OwnedRequest zrem_req = create_req({"zrem", "myzset", "member1"});
+    do_owned_req(kv, &zrem_req, &out);
     verify_out_int(1);
     free_req(zrem_req);
 
     // ZSCORE of removed member
-    simple_req zscore_after_rem_req = create_req({"zscore", "myzset", "member1"});
-    do_req(kv, &zscore_after_rem_req, &out);
+    OwnedRequest zscore_after_rem_req = create_req({"zscore", "myzset", "member1"});
+    do_owned_req(kv, &zscore_after_rem_req, &out);
     verify_out_nil();
     free_req(zscore_after_rem_req);
 }
 
 TEST_F(KVStoreTest, ZQueryCommand) {
-    simple_req zadd_req1 = create_req({"zadd", "zquerykey", "10", "a"});
-    do_req(kv, &zadd_req1, &out);
+    OwnedRequest zadd_req1 = create_req({"zadd", "zquerykey", "10", "a"});
+    do_owned_req(kv, &zadd_req1, &out);
     rb_clear(&out);
     free_req(zadd_req1);
 
-    simple_req zadd_req2 = create_req({"zadd", "zquerykey", "20", "b"});
-    do_req(kv, &zadd_req2, &out);
+    OwnedRequest zadd_req2 = create_req({"zadd", "zquerykey", "20", "b"});
+    do_owned_req(kv, &zadd_req2, &out);
     rb_clear(&out);
     free_req(zadd_req2);
 
-    simple_req zadd_req3 = create_req({"zadd", "zquerykey", "20", "c"});
-    do_req(kv, &zadd_req3, &out);
+    OwnedRequest zadd_req3 = create_req({"zadd", "zquerykey", "20", "c"});
+    do_owned_req(kv, &zadd_req3, &out);
     rb_clear(&out);
     free_req(zadd_req3);
 
-    simple_req zadd_req4 = create_req({"zadd", "zquerykey", "30", "d"});
-    do_req(kv, &zadd_req4, &out);
+    OwnedRequest zadd_req4 = create_req({"zadd", "zquerykey", "30", "d"});
+    do_owned_req(kv, &zadd_req4, &out);
     rb_clear(&out);
     free_req(zadd_req4);
 
     // zquery zquerykey 20 c 0 2
     // limit is 2, so it should return 1 pair (c, 20)
-    simple_req zquery_req = create_req({"zquery", "zquerykey", "20", "c", "0", "2"});
-    do_req(kv, &zquery_req, &out);
+    OwnedRequest zquery_req = create_req({"zquery", "zquerykey", "20", "c", "0", "2"});
+    do_owned_req(kv, &zquery_req, &out);
 
     uint8_t tag;
     rb_read(&out, &tag, 1);
@@ -241,8 +253,8 @@ TEST_F(KVStoreTest, ZQueryCommand) {
     // zquery zquerykey 10 a 1 4
     // start from (10, a), offset 1 -> (20, b)
     // limit is 4, so it should return 2 pairs (b, 20), (c, 20)
-    simple_req zquery_req2 = create_req({"zquery", "zquerykey", "10", "a", "1", "4"});
-    do_req(kv, &zquery_req2, &out);
+    OwnedRequest zquery_req2 = create_req({"zquery", "zquerykey", "10", "a", "1", "4"});
+    do_owned_req(kv, &zquery_req2, &out);
 
     rb_read(&out, &tag, 1);
     ASSERT_EQ(tag, TAG_ARR);
@@ -260,20 +272,20 @@ TEST_F(KVStoreTest, ZQueryCommand) {
 
 // TEST_F(KVStoreTest, Expiration) {
 //     // SET key value
-//     simple_req set_req = create_req({"set", "tempkey", "tempvalue"});
-//     do_req(kv, &set_req, &out);
+//     OwnedRequest set_req = create_req({"set", "tempkey", "tempvalue"});
+//     do_owned_req(kv, &set_req, &out);
 //     verify_out_nil();
 //     free_req(set_req);
 //
 //     // PEXPIRE key 50
-//     simple_req expire_req = create_req({"pexpire", "tempkey", "50"});
-//     do_req(kv, &expire_req, &out);
+//     OwnedRequest expire_req = create_req({"pexpire", "tempkey", "50"});
+//     do_owned_req(kv, &expire_req, &out);
 //     verify_out_int(1);
 //     free_req(expire_req);
 //
 //     // PTTL key
-//     simple_req pttl_req = create_req({"pttl", "tempkey"});
-//     do_req(kv, &pttl_req, &out);
+//     OwnedRequest pttl_req = create_req({"pttl", "tempkey"});
+//     do_owned_req(kv, &pttl_req, &out);
 //     uint8_t tag;
 //     rb_read(&out, &tag, 1);
 //     ASSERT_EQ(tag, TAG_INT);
@@ -289,8 +301,8 @@ TEST_F(KVStoreTest, ZQueryCommand) {
 //     // process_timer(kv);
 //
 //     // GET expired key
-//     simple_req get_expired_req = create_req({"get", "tempkey"});
-//     do_req(kv, &get_expired_req, &out);
+//     OwnedRequest get_expired_req = create_req({"get", "tempkey"});
+//     do_owned_req(kv, &get_expired_req, &out);
 //     verify_out_nil();
 //     free_req(get_expired_req);
 // }

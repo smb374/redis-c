@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <rapidhash.h>
 #include <sched.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -56,9 +57,21 @@ uint64_t vstr_hash_fnv(const vstr *v) {
 }
 uint64_t vstr_hash_rapid(const vstr *v) { return rapidhash(v->dat, v->len); }
 
+void logger(FILE *f, const char *tag, const char *format, ...) {
+#ifdef LOGGING
+    char buf[200];
+    time_t t = time(NULL);
+    strftime(buf, 200, "%Y-%m-%dT%H:%M:%SZ", gmtime(&(time_t) {time(NULL)}));
+    fprintf(f, "%s [%s] ", buf, tag);
+    va_list args;
+    va_start(args, format);
+    vfprintf(f, format, args);
+    va_end(args);
+#endif
+}
 void msg(const char *msg) { fprintf(stderr, "%s\n", msg); }
 void die(const char *source) {
-    perror(source);
+    logger(stderr, "ERROR", "Fatal error from %s: %s\n", source, strerror(errno));
     exit(EXIT_FAILURE);
 }
 

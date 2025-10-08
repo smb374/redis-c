@@ -1,4 +1,5 @@
 #include "ringbuf.h"
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -57,10 +58,8 @@ size_t rb_write(RingBuf *rb, const uint8_t *buf, const size_t len) {
     size_t nwrite = 0;
 
     while (nwrite < to_write) {
-        const size_t part = MIN(to_write - nwrite,
-                                (rb->tail < rb->head)
-                                ? rb->head - rb->tail - 1
-                                : rb->cap - rb->tail - (!rb->head ? 1 : 0));
+        const size_t part = MIN(to_write - nwrite, (rb->tail < rb->head) ? rb->head - rb->tail - 1
+                                                                         : rb->cap - rb->tail - (!rb->head ? 1 : 0));
         if (!part)
             break;
 
@@ -80,9 +79,7 @@ size_t rb_read(RingBuf *rb, uint8_t *buf, const size_t len) {
     size_t nread = 0;
 
     while (nread < to_read) {
-        const size_t part =
-                MIN(to_read - nread, (rb->head < rb->tail) ? rb->tail - rb->head
-                    : rb->cap - rb->head);
+        const size_t part = MIN(to_read - nread, (rb->head < rb->tail) ? rb->tail - rb->head : rb->cap - rb->head);
         if (!part)
             break;
 
@@ -94,12 +91,9 @@ size_t rb_read(RingBuf *rb, uint8_t *buf, const size_t len) {
     return nread;
 }
 
-size_t rb_peek0(RingBuf *rb, uint8_t *buf, const size_t len) {
-    return rb_peek(rb, buf, len, 0);
-}
+size_t rb_peek0(RingBuf *rb, uint8_t *buf, const size_t len) { return rb_peek(rb, buf, len, 0); }
 
-size_t rb_peek(RingBuf *rb, uint8_t *buf, const size_t len,
-               const size_t offset) {
+size_t rb_peek(RingBuf *rb, uint8_t *buf, const size_t len, const size_t offset) {
     if (!rb || !buf || !len)
         return 0;
 
@@ -110,9 +104,7 @@ size_t rb_peek(RingBuf *rb, uint8_t *buf, const size_t len,
     size_t npeek = 0, phead = (rb->head + offset) % rb->cap;
 
     while (npeek < to_peek) {
-        const size_t part =
-                MIN(to_peek - npeek,
-                    (phead < rb->tail) ? rb->tail - phead : rb->cap - phead);
+        const size_t part = MIN(to_peek - npeek, (phead < rb->tail) ? rb->tail - phead : rb->cap - phead);
         if (!part)
             break;
 

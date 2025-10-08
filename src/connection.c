@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -71,6 +72,7 @@ EXIT:
     return;
 
 CLOSE:
+    logger(stderr, "INFO", "[conn %d] Reached CLOSE state, closing...\n", c->fd);
     conn_clear(c);
 }
 
@@ -107,7 +109,7 @@ static void idle_timer_cb(EV_P_ ev_timer *w, const int revents) {
             ev_timer_start(EV_A_ w);
             return;
         }
-        fprintf(stderr, "Connection %d timed out, closing...\n", c->fd);
+        logger(stderr, "INFO", "[idle] Connection %d timed out, closing...\n", c->fd);
         conn_clear(c);
     }
     ev_timer_set(w, TIMEOUT_S, 0.);
@@ -146,7 +148,7 @@ void srv_clear(SrvConn *c) {
 
     while (!dlist_empty(&idles)) {
         Conn *c = container_of(idles.next, Conn, node);
-        fprintf(stderr, "Closing connection %d\n", c->fd);
+        logger(stderr, "INFO", "[srv] Closing connection %d\n", c->fd);
         conn_clear(c);
     }
 
@@ -195,21 +197,22 @@ static ConnState handle_read(Conn *c) {
     uint8_t buf[INIT_BUFFER_SIZE];
     errno = 0;
     const ssize_t ret = read(c->fd, buf, INIT_BUFFER_SIZE);
+    int err = errno;
     if (ret < 0) {
-        switch (errno) {
+        switch (err) {
             case EAGAIN:
                 return AGAIN;
             case EINTR:
                 return handle_read(c);
             default:
-                perror("read()");
+                logger(stderr, "WARN", "[conn %d] read() failed: %s\n", c->fd, strerror(err));
                 return CLOSE;
         }
     } else if (!ret) {
         if (rb_empty(&c->income)) {
-            fprintf(stderr, "Client disconnected\n");
+            logger(stderr, "INFO", "[conn %d] closed\n", c->fd);
         } else {
-            fprintf(stderr, "Unexpected EOF\n");
+            logger(stderr, "INFO", "[conn %d] Unexpected EOF\n", c->fd);
         }
         return CLOSE;
     }
@@ -229,8 +232,6 @@ static ConnState handle_read(Conn *c) {
 
     if (s == CLOSE)
         return CLOSE;
-    if (rb_size(&c->outgo) > 0)
-        return handle_write(c);
 
     return OK;
 }
@@ -286,8 +287,8 @@ static ConnState handle_accept(SrvConn *c) {
         }
     } else {
         const uint32_t ip = caddr.sin_addr.s_addr;
-        fprintf(stderr, "new client from %u.%u.%u.%u:%u\n", ip & 255, (ip >> 8) & 255, (ip >> 16) & 255, ip >> 24,
-                ntohs(caddr.sin_port));
+        logger(stderr, "INFO", "[srv] new client from %u.%u.%u.%u:%u\n", ip & 255, (ip >> 8) & 255, (ip >> 16) & 255,
+               ip >> 24, ntohs(caddr.sin_port));
         set_nonblock(cfd);
         conn_init(NULL, cfd);
         return OK;

@@ -9,6 +9,7 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #define container_of(ptr, T, member) ((T *) ((char *) (ptr) - offsetof(T, member)))
 
 struct vstr {
@@ -35,6 +36,7 @@ uint64_t vstr_hash_fnv(const vstr *v);
 uint64_t int_hash_rapid(uint64_t val);
 uint64_t bytes_hash_rapid(const uint8_t *bytes, size_t len);
 uint64_t vstr_hash_rapid(const vstr *v);
+void logger(FILE *f, const char *tag, const char *format, ...);
 void msg(const char *msg);
 void die(const char *source);
 void set_nonblock(int fd);

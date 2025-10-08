@@ -32,6 +32,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(ev)
 
+option(ENABLE_LOGGING "Enable Logging with logger" OFF)
+
 # Bundle all files into a lib except for executable files.
 add_library(common_lib STATIC
         src/hashtable.c
@@ -53,11 +55,18 @@ target_link_libraries(common_lib PUBLIC ev::ev)
 target_include_directories(common_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+if (ENABLE_LOGGING)
+    target_compile_definitions(common_lib PRIVATE LOGGING)
+endif()
 
 # Executables
 ## KV Server
 add_executable(kv_server src/kv_server.c)
 target_link_libraries(kv_server PRIVATE common_lib)
+if(ENABLE_LOGGING)
+    target_compile_definitions(kv_server PRIVATE LOGGING)
+endif()
+
 ## KV Client
 add_executable(kv_client tests/kv_client.cpp)
 

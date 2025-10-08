@@ -1,11 +1,14 @@
 #include "parse.h"
 #include "ringbuf.h"
 
+#include <assert.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/types.h>
 
 
 bool str2dbl(const vstr *str, double *out) {
@@ -18,6 +21,38 @@ bool str2int(const vstr *str, int64_t *out) {
     char *endptr = NULL;
     *out = strtoll(str->dat, &endptr, 10);
     return true;
+}
+
+OwnedRequest *new_owned_req(OwnedRequest *oreq, RingBuf *rb, const size_t sz) {
+    if (!oreq) {
+        oreq = calloc(1, sizeof(OwnedRequest));
+        assert(oreq);
+        oreq->is_alloc = true;
+    } else {
+        oreq->is_alloc = false;
+    }
+
+    ssize_t ret = parse_simple_req(rb, sz, &oreq->base);
+    if (ret < 0) {
+        if (oreq->is_alloc) {
+            free(oreq);
+        }
+        return NULL;
+    }
+    simple2req(&oreq->base, &oreq->req);
+
+    return oreq;
+}
+
+void owned_req_destroy(OwnedRequest *oreq) {
+    for (int i = 0; i < oreq->base.argc; i++) {
+        vstr_destroy(oreq->base.argv[i]);
+    }
+    free(oreq->base.argv);
+
+    if (oreq->is_alloc) {
+        free(oreq);
+    }
 }
 
 ssize_t parse_simple_req(RingBuf *rb, const size_t sz, simple_req *out) {
@@ -133,9 +168,4 @@ void simple2req(const simple_req *sreq, Request *req) {
     } else {
         req->type = CMD_UNKNOWN;
     }
-}
-
-void simple2oreq(const simple_req *sreq, OwnedRequest *req) {
-    simple2req(sreq, &req->req);
-    req->base = sreq;
 }

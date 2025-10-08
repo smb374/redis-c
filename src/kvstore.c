@@ -16,25 +16,73 @@
 #include "parse.h"
 #include "ringbuf.h"
 #include "serialize.h"
+#include "thread_pool.h"
 #include "utils.h"
 #include "zset.h"
 
+#define MAX_MSG 32 << 20
+
 struct Work {
     cnode node;
-    OwnedRequest req;
-    RingBuf buf;
-    const Conn *c;
+    OwnedRequest *req;
+    RingBuf *buf;
+    KVStore *kv;
+    Conn *c;
 };
+typedef struct Work Work;
 
-Entry *entry_new(const vstr *key, const uint32_t type) {
-    Entry *e = calloc(1, sizeof(Entry));
-    spin_rw_init(&e->lock);
-    e->type = type;
-    if (key) {
-        vstr_cpy(&e->key, key);
-        e->node.hcode = vstr_hash_rapid(e->key);
+struct Result {
+    cnode node;
+    RingBuf *buf;
+    Conn *c;
+};
+typedef struct Result Result;
+
+// Callbacks for thread pool
+static bool kv_res_cb(cnode *rn) {
+    if ((uint64_t) rn == STOP_MAGIC) {
+        return true;
     }
-    return e;
+    struct ev_loop *loop = ev_default_loop(0);
+    Result *r = container_of(rn, Result, node);
+    Conn *c = r->c;
+    // Write buf to outgo
+    size_t resp_size = rb_size(r->buf);
+    if (resp_size > MAX_MSG) {
+        rb_clear(r->buf);
+        out_err(r->buf, ERR_TOO_BIG, "message too long");
+        resp_size = rb_size(r->buf);
+    }
+    write_u32(&c->outgo, (uint32_t) resp_size);
+    out_buf(&c->outgo, r->buf);
+    // Add EV_WRITE for conn
+    if (c->fd) {
+        ev_io_stop(loop, &c->iow);
+        ev_io_set(&c->iow, c->fd, EV_READ | EV_WRITE);
+        ev_io_start(loop, &c->iow);
+    }
+    // Cleanup
+    rb_destroy(r->buf);
+    free(r->buf);
+    free(r);
+    return false;
+}
+
+static cnode *kv_wrk_cb(cnode *wn) {
+    // Setup
+    Work *w = container_of(wn, Work, node);
+    KVStore *kv = w->kv;
+    Result *r = calloc(1, sizeof(Result));
+    // Do req
+    do_owned_req(kv, w->req, w->buf);
+    // Setup result
+    r->buf = w->buf;
+    r->c = w->c;
+    // Clean work.
+    w->buf = NULL;
+    owned_req_destroy(w->req);
+    free(w);
+    return &r->node;
 }
 
 static HNode *upsert_create(HNode *key) {
@@ -63,14 +111,36 @@ KVStore *kv_new(KVStore *kv) {
         kv->is_alloc = false;
     }
     chm_new(&kv->store);
+    pool_init(&kv->pool, kv_res_cb);
     return kv;
 }
 void kv_clear(KVStore *kv) {
     // TODO: Purge all nodes & Send to GC
+    pool_destroy(&kv->pool);
     chm_clear(&kv->store);
     if (kv->is_alloc) {
         free(kv);
     }
+}
+void kv_dispatch(KVStore *kv, Conn *c, OwnedRequest *req) {
+    ThreadPool *pool = &kv->pool;
+
+    Work *w = calloc(1, sizeof(Work));
+    assert(w);
+    w->buf = calloc(1, sizeof(RingBuf));
+    rb_init(w->buf, 4096);
+    w->c = c;
+    w->kv = kv;
+    w->req = req;
+
+    pool_post(pool, &w->node);
+}
+
+void kv_start(KVStore *kv) { pool_start(&kv->pool, kv_wrk_cb); }
+void kv_stop(KVStore *kv) {
+    logger(stderr, "INFO", "[master] Send stop signal...\n");
+    cq_put(kv->pool.result_q, (cnode *) STOP_MAGIC);
+    ev_async_send(EV_DEFAULT, &kv->pool.rev);
 }
 
 // get key
@@ -116,8 +186,9 @@ void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
                 vstr_cpy(&ent->val.s, vstr);
                 break;
             case ENT_ZSET:
+                spin_rw_wunlock(&ent->lock);
                 out_err(out, ERR_BAD_TYP, "non string entry");
-                break;
+                return;
         }
         spin_rw_wunlock(&ent->lock);
         out_nil(out);
@@ -180,6 +251,7 @@ void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *na
                 added = zset_insert(&ent->val.zs, name->dat, name->len, score);
                 break;
             case ENT_STR:
+                spin_rw_wunlock(&ent->lock);
                 out_err(out, ERR_BAD_TYP, "non zset entry");
                 return;
         }
@@ -288,32 +360,30 @@ void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *
     rb_destroy(&buf);
 }
 
-void do_req(KVStore *kv, const simple_req *sreq, RingBuf *out) {
-    Request req;
-    simple2req(sreq, &req);
-    switch (req.type) {
+void do_owned_req(KVStore *kv, OwnedRequest *oreq, RingBuf *out) {
+    switch (oreq->req.type) {
         case CMD_GET:
-            return do_get(kv, out, req.key);
+            return do_get(kv, out, oreq->req.key);
         case CMD_SET:
-            return do_set(kv, out, req.key, req.args.val);
+            return do_set(kv, out, oreq->req.key, oreq->req.args.val);
         case CMD_DEL:
-            return do_del(kv, out, req.key);
+            return do_del(kv, out, oreq->req.key);
         case CMD_KEYS:
             return do_keys(kv, out);
         case CMD_ZADD:
-            return do_zadd(kv, out, req.key, req.args.zadd_arg.score, req.args.zadd_arg.name);
+            return do_zadd(kv, out, oreq->req.key, oreq->req.args.zadd_arg.score, oreq->req.args.zadd_arg.name);
         case CMD_ZREM:
-            return do_zrem(kv, out, req.key, req.args.val);
+            return do_zrem(kv, out, oreq->req.key, oreq->req.args.val);
         case CMD_ZSCORE:
-            return do_zscore(kv, out, req.key, req.args.val);
+            return do_zscore(kv, out, oreq->req.key, oreq->req.args.val);
         case CMD_ZQUERY:
-            return do_zquery(kv, out, req.key, req.args.zquery_arg.score, req.args.zquery_arg.name,
-                             req.args.zquery_arg.offset, req.args.zquery_arg.limit);
+            return do_zquery(kv, out, oreq->req.key, oreq->req.args.zquery_arg.score, oreq->req.args.zquery_arg.name,
+                             oreq->req.args.zquery_arg.offset, oreq->req.args.zquery_arg.limit);
         case CMD_PTTL:
         case CMD_PEXPIRE:
             return out_err(out, ERR_UNKNOWN, "command not implemented");
         case CMD_BAD:
-            return out_err(out, ERR_BAD_ARG, req.args.err);
+            return out_err(out, ERR_BAD_ARG, oreq->req.args.err);
         case CMD_UNKNOWN:
             return out_err(out, ERR_UNKNOWN, "unknown command");
     }

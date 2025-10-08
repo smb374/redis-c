@@ -5,9 +5,11 @@
 #ifndef KVSTORE_H
 #define KVSTORE_H
 
+#include "thread_pool.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include "connection.h"
 #include "hashtable.h"
 #include "parse.h"
 #include "utils.h"
@@ -45,16 +47,26 @@ struct Entry {
 };
 struct KVStore {
     CHMap store;
+    ThreadPool pool;
     bool is_alloc;
 };
 #endif
 
-Entry *entry_new(const vstr *key, uint32_t type);
 bool entry_eq(HNode *ln, HNode *rn);
 
 KVStore *kv_new(KVStore *kv);
 void kv_clear(KVStore *kv);
-void do_req(KVStore *kv, const simple_req *req, RingBuf *out);
+void do_owned_req(KVStore *kv, OwnedRequest *oreq, RingBuf *out);
+// Called by `try_one_req` to dispatch to thread pool
+void kv_dispatch(KVStore *kv, Conn *c, OwnedRequest *req);
+// Start thread pool
+//
+// NOTE: Doesn't start main loop
+void kv_start(KVStore *kv);
+// Stop thread pool.
+//
+// Currently by pushing a STOP_MAGIC to result queue
+void kv_stop(KVStore *kv);
 
 // void kv_clear_entry(KVStore *kv, Entry *e);
 // void kv_set_ttl(KVStore *kv, Entry *e, int64_t ttl);
