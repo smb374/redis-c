@@ -457,6 +457,55 @@ HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *)) {
     return result;
 }
 
+// Creates an empty node when key not exists.
+HNode *chm_upsert(CHMap *hm, HNode *key, HNode *(*create)(HNode *), bool (*eq)(HNode *, HNode *)) {
+    const size_t nlidx = key->hcode % BUCKET_LOCKS;
+    const size_t olidx = key->hcode % BUCKET_LOCKS;
+    CHTable *lnew = atomic_load_explicit(&hm->newer, memory_order_acquire);
+    CHTable *lold = atomic_load_explicit(&hm->older, memory_order_acquire);
+    HNode **from, *result = NULL;
+    bool found = false;
+
+    if (!lnew && !lold)
+        return NULL;
+
+    if (lold) {
+        pthread_mutex_lock(&hm->ob_lock[olidx]);
+        from = cht_lookup(lold, key, eq);
+        if (from && *from) {
+            result = *from;
+        }
+        pthread_mutex_unlock(&hm->ob_lock[olidx]);
+    }
+    if (!result && lnew) {
+        pthread_mutex_lock(&hm->nb_lock[nlidx]);
+        from = cht_lookup(lnew, key, eq);
+        if (from && *from) {
+            result = *from;
+        } else {
+            HNode *nnode = create(key);
+            bool res = cht_insert(lnew, nnode, &hm->size);
+            result = res ? nnode : NULL;
+        }
+        pthread_mutex_unlock(&hm->nb_lock[nlidx]);
+        if (!lold) {
+            // check whether we need to rehash
+            size_t nsize = atomic_load_explicit(&lnew->size, memory_order_acquire);
+            size_t nmask = atomic_load_explicit(&lnew->mask, memory_order_acquire);
+            const size_t threshold = (nmask + 1) * MAX_LOAD;
+            if (nsize >= threshold) {
+                chm_trigger_rehashing(hm);
+            }
+        }
+    }
+
+    bool marked = chm_help_rehashing(hm); // migrate some keys
+    write_counter = (write_counter + 1) & 0xFF;
+    if (!marked && !write_counter)
+        qsbr_quiescent(&hm->gc, hm_tid);
+    return result;
+}
+
 bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *)) {
     const size_t nlidx = node->hcode % BUCKET_LOCKS;
     const size_t olidx = node->hcode % BUCKET_LOCKS;

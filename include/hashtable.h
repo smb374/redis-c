@@ -74,6 +74,7 @@ void hm_foreach(const HMap *hm, bool (*f)(HNode *, void *), void *arg);
 CHMap *chm_new(CHMap *hm);
 void chm_register(CHMap *hm);
 HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
+HNode *chm_upsert(CHMap *hm, HNode *key, HNode *(*create)(HNode *), bool (*eq)(HNode *, HNode *));
 bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *));
 void chm_insert_unchecked(CHMap *hm, HNode *node);
 HNode *chm_delete(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));

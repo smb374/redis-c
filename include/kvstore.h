@@ -8,9 +8,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include "connection.h"
 #include "hashtable.h"
-#include "heap.h"
 #include "parse.h"
 #include "utils.h"
 #include "zset.h"
@@ -28,35 +26,40 @@ enum ErrType {
     ERR_BAD_ARG = 4,
 };
 
+struct KVStore;
+typedef struct KVStore KVStore;
+struct Entry;
+typedef struct Entry Entry;
+
+#ifndef __cplusplus
 struct Entry {
     HNode node;
+    spin_rwlock lock;
+
     uint32_t type;
-    size_t heap_idx;
     vstr *key;
     union {
         vstr *s;
         ZSet zs;
     } val;
 };
-typedef struct Entry Entry;
-
 struct KVStore {
-    Heap expire;
-    HMap store;
+    CHMap store;
+    bool is_alloc;
 };
-typedef struct KVStore KVStore;
+#endif
 
 Entry *entry_new(const vstr *key, uint32_t type);
 bool entry_eq(HNode *ln, HNode *rn);
 
-void kv_clear_entry(KVStore *kv, Entry *e);
-void kv_set_ttl(KVStore *kv, Entry *e, int64_t ttl);
-int32_t next_timer_ms(KVStore *kv);
-void process_timer(KVStore *kv);
-void kv_init(KVStore *kv);
+KVStore *kv_new(KVStore *kv);
 void kv_clear(KVStore *kv);
 void do_req(KVStore *kv, const simple_req *req, RingBuf *out);
 
+// void kv_clear_entry(KVStore *kv, Entry *e);
+// void kv_set_ttl(KVStore *kv, Entry *e, int64_t ttl);
+// int32_t next_timer_ms(KVStore *kv);
+// void process_timer(KVStore *kv);
 
 #ifdef __cplusplus
 }

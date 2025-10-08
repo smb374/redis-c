@@ -1,3 +1,5 @@
+#include "qsbr.h"
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -5,7 +7,6 @@
 #include <stdlib.h>
 
 #include "cqueue.h"
-#include "qsbr.h"
 #include "utils.h"
 
 qsbr *qsbr_init(qsbr *gc, size_t back_logs) {

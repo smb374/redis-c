@@ -68,19 +68,19 @@ static void exit_cb(EV_P_ ev_signal *w, const int revents) {
     ev_break(EV_A_ EVBREAK_ALL);
 }
 
-static void kv_timer_cb(EV_P_ ev_timer *w, const int revents) {
-    process_timer(&g_data);
-    int32_t next = next_timer_ms(&g_data);
-    if (next > 0) {
-        ev_timer_stop(EV_A_ w);
-        ev_timer_set(w, (double) next / 1000.0, 1.);
-        ev_timer_start(EV_A_ w);
-    }
-}
+// static void kv_timer_cb(EV_P_ ev_timer *w, const int revents) {
+//     process_timer(&g_data);
+//     int32_t next = next_timer_ms(&g_data);
+//     if (next > 0) {
+//         ev_timer_stop(EV_A_ w);
+//         ev_timer_set(w, (double) next / 1000.0, 1.);
+//         ev_timer_start(EV_A_ w);
+//     }
+// }
 
 int main() {
     // Init KVStore.
-    kv_init(&g_data);
+    kv_new(&g_data);
     struct ev_loop *loop = ev_default_loop(0);
     // Signal Handling
     ev_signal sigint, sigterm;
@@ -89,8 +89,8 @@ int main() {
     ev_signal_start(loop, &sigint);
     ev_signal_start(loop, &sigterm);
     // KVStore timer
-    ev_timer_init(&kv_timer, kv_timer_cb, 1., 1.);
-    ev_timer_start(loop, &kv_timer);
+    // ev_timer_init(&kv_timer, kv_timer_cb, 1., 1.);
+    // ev_timer_start(loop, &kv_timer);
     // Setup server
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {

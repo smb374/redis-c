@@ -58,10 +58,17 @@ struct Request {
 };
 typedef struct Request Request;
 
+struct OwnedRequest {
+    Request req;
+    const simple_req *base;
+};
+typedef struct OwnedRequest OwnedRequest;
+
 bool str2dbl(const vstr *str, double *out);
 bool str2int(const vstr *str, int64_t *out);
 ssize_t parse_simple_req(RingBuf *rb, size_t sz, simple_req *out);
 void simple2req(const simple_req *sreq, Request *req);
+void simple2oreq(const simple_req *sreq, OwnedRequest *req);
 
 #ifdef __cplusplus
 }

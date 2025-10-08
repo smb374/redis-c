@@ -3,20 +3,13 @@
 //
 #include "heap.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-static size_t heap_parent(const size_t i) {
-    return (i + 1) / 2 - 1;
-}
-
-static size_t heap_left(const size_t i) {
-    return 2 * i + 1;
-}
-
-static size_t heap_right(const size_t i) {
-    return 2 * i + 2;
-}
+static size_t heap_parent(const size_t i) { return (i + 1) / 2 - 1; }
+static size_t heap_left(const size_t i) { return 2 * i + 1; }
+static size_t heap_right(const size_t i) { return 2 * i + 2; }
 
 void heap_init(Heap *heap, const size_t cap) {
     heap->cap = cap;
@@ -76,9 +69,13 @@ void heap_update(Heap *heap, const size_t pos) {
 void heap_upsert(Heap *heap, size_t pos, HeapNode node) {
     if (pos < heap->len) {
         heap->nodes[pos] = node;
+    } else if (pos == (size_t) -1 && heap->len < heap->cap) {
+        pos = heap->len;
+        heap->nodes[pos] = node;
+        heap->len++;
     } else {
         heap->cap <<= 1;
-        HeapNode* nnodes = realloc(heap->nodes, heap->cap * sizeof(HeapNode));
+        HeapNode *nnodes = realloc(heap->nodes, heap->cap * sizeof(HeapNode));
         if (!nnodes) {
             perror("realloc");
             exit(EXIT_FAILURE);
@@ -92,7 +89,7 @@ void heap_upsert(Heap *heap, size_t pos, HeapNode node) {
     heap_update(heap, pos);
 }
 
-void heap_delete(Heap* heap, const size_t pos) {
+void heap_delete(Heap *heap, const size_t pos) {
     if (pos < heap->len) {
         heap->nodes[pos] = heap->nodes[heap->len - 1];
         heap->len--;
@@ -101,3 +98,4 @@ void heap_delete(Heap* heap, const size_t pos) {
         }
     }
 }
+

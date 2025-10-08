@@ -134,3 +134,8 @@ void simple2req(const simple_req *sreq, Request *req) {
         req->type = CMD_UNKNOWN;
     }
 }
+
+void simple2oreq(const simple_req *sreq, OwnedRequest *req) {
+    simple2req(sreq, &req->req);
+    req->base = sreq;
+}

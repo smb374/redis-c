@@ -2,17 +2,33 @@
 // Created by poyehchen on 9/30/25.
 //
 #include "kvstore.h"
-#include "parse.h"
-#include "serialize.h"
 
+#include <assert.h>
+#include <ev.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "connection.h"
+#include "cqueue.h"
+#include "hashtable.h"
+#include "parse.h"
+#include "ringbuf.h"
+#include "serialize.h"
+#include "utils.h"
+#include "zset.h"
+
+struct Work {
+    cnode node;
+    OwnedRequest req;
+    RingBuf buf;
+    const Conn *c;
+};
+
 Entry *entry_new(const vstr *key, const uint32_t type) {
     Entry *e = calloc(1, sizeof(Entry));
-    e->heap_idx = -1;
+    spin_rw_init(&e->lock);
     e->type = type;
     if (key) {
         vstr_cpy(&e->key, key);
@@ -20,6 +36,18 @@ Entry *entry_new(const vstr *key, const uint32_t type) {
     }
     return e;
 }
+
+static HNode *upsert_create(HNode *key) {
+    assert(key);
+    Entry *ent = calloc(1, sizeof(Entry));
+    Entry *kent = container_of(key, Entry, node);
+    spin_rw_init(&ent->lock);
+    vstr_cpy(&ent->key, kent->key);
+    ent->node.hcode = kent->node.hcode;
+
+    return &ent->node;
+}
+
 bool entry_eq(HNode *ln, HNode *rn) {
     const Entry *le = container_of(ln, Entry, node);
     const Entry *re = container_of(rn, Entry, node);
@@ -27,77 +55,22 @@ bool entry_eq(HNode *ln, HNode *rn) {
     return le->key->len == re->key->len && !strncmp(le->key->dat, re->key->dat, le->key->len);
 }
 
-void kv_clear_entry(KVStore *kv, Entry *e) {
-    kv_set_ttl(kv, e, -1);
-    hm_delete(&kv->store, &e->node, entry_eq);
-    vstr_destroy(e->key);
-    switch (e->type) {
-        case ENT_STR:
-            vstr_destroy(e->val.s);
-            break;
-        case ENT_ZSET:
-            zset_destroy(&e->val.zs);
-            break;
-        default:
-            break;
-    }
-    free(e);
-}
-void kv_set_ttl(KVStore *kv, Entry *e, int64_t ttl) {
-    if (ttl < 0 && e->heap_idx != (size_t) -1) {
-        heap_delete(&kv->expire, e->heap_idx);
-        e->heap_idx = (size_t) -1;
+KVStore *kv_new(KVStore *kv) {
+    if (!kv) {
+        kv = calloc(1, sizeof(KVStore));
+        kv->is_alloc = true;
     } else {
-        const uint64_t expire_at = get_clock_ms() + (uint64_t) ttl;
-        const HeapNode node = {expire_at, &e->heap_idx};
-        heap_upsert(&kv->expire, e->heap_idx, node);
+        kv->is_alloc = false;
     }
-}
-int32_t next_timer_ms(KVStore *kv) {
-    const uint64_t now = get_clock_ms();
-    uint64_t next = (uint64_t) -1;
-    if (kv->expire.len && kv->expire.nodes[0].val < next) {
-        next = kv->expire.nodes[0].val;
-    }
-
-    if (next == (uint64_t) -1) {
-        return -1;
-    }
-    if (next <= now) {
-        return 0;
-    }
-    return (int32_t) (next - now);
-}
-void process_timer(KVStore *kv) {
-    const uint64_t now = get_clock_ms();
-    while (kv->expire.len && kv->expire.nodes[0].val < now) {
-        Entry *e = container_of(kv->expire.nodes[0].ref, Entry, heap_idx);
-        hm_delete(&kv->store, &e->node, entry_eq);
-        kv_clear_entry(kv, e);
-    }
-}
-void kv_init(KVStore *kv) {
-    bzero(&kv->store, sizeof(Heap));
-    heap_init(&kv->expire, 4096);
+    chm_new(&kv->store);
+    return kv;
 }
 void kv_clear(KVStore *kv) {
-    HTable *tables[] = {&kv->store.newer, &kv->store.older};
-    for (int i = 0; i < 2; i++) {
-        if (tables[i]->tab) {
-            for (size_t j = 0; j <= tables[i]->mask; j++) {
-                HNode *node = tables[i]->tab[j];
-                while (node) {
-                    HNode *next = node->next; // Save next before delete
-                    Entry *e = container_of(node, Entry, node);
-                    kv_clear_entry(kv, e);
-                    node = next;
-                }
-            }
-        }
+    // TODO: Purge all nodes & Send to GC
+    chm_clear(&kv->store);
+    if (kv->is_alloc) {
+        free(kv);
     }
-
-    hm_clear(&kv->store);
-    heap_free(&kv->expire);
 }
 
 // get key
@@ -107,18 +80,20 @@ void do_get(KVStore *kv, RingBuf *out, vstr *kstr) {
             .node.hcode = vstr_hash_rapid(kstr),
     };
 
-    HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
+    HNode *node = chm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
         out_nil(out);
         return;
     }
 
-    const Entry *ent = container_of(node, Entry, node);
+    Entry *ent = container_of(node, Entry, node);
+    spin_rw_rlock(&ent->lock);
     if (ent->type != ENT_STR) {
         out_err(out, ERR_BAD_TYP, "not a string");
     } else {
         out_vstr(out, ent->val.s);
     }
+    spin_rw_runlock(&ent->lock);
 }
 
 // set key val_str
@@ -128,25 +103,25 @@ void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
             .node.hcode = vstr_hash_rapid(kstr),
     };
 
-    HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
-    if (node) {
-        Entry *ent = container_of(node, Entry, node);
-        if (ent->type != ENT_STR) {
-            out_err(out, ERR_BAD_TYP, "non string entry");
-        } else {
-            // Modify to return old data in response.
-            vstr_cpy(&ent->val.s, vstr);
-        }
+    HNode *node = chm_upsert(&kv->store, &key.node, upsert_create, entry_eq);
+    if (!node) {
+        out_err(out, ERR_UNKNOWN, "store not initialized");
     } else {
-        Entry *ent = calloc(1, sizeof(Entry));
-        ent->type = ENT_STR;
-        vstr_cpy(&ent->key, kstr);
-        vstr_cpy(&ent->val.s, vstr);
-        ent->node.hcode = key.node.hcode;
-        ent->heap_idx = (size_t) -1;
-        hm_insert_unchecked(&kv->store, &ent->node);
+        Entry *ent = container_of(node, Entry, node);
+        spin_rw_wlock(&ent->lock);
+        switch (ent->type) {
+            case ENT_INIT:
+                ent->type = ENT_STR;
+            case ENT_STR:
+                vstr_cpy(&ent->val.s, vstr);
+                break;
+            case ENT_ZSET:
+                out_err(out, ERR_BAD_TYP, "non string entry");
+                break;
+        }
+        spin_rw_wunlock(&ent->lock);
+        out_nil(out);
     }
-    out_nil(out);
 }
 
 // del key
@@ -155,56 +130,63 @@ void do_del(KVStore *kv, RingBuf *out, vstr *kstr) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    HNode *node = hm_delete(&kv->store, &key.node, entry_eq);
+    HNode *node = chm_delete(&kv->store, &key.node, entry_eq);
     if (!node) {
         out_int(out, 0);
     } else {
         Entry *ent = container_of(node, Entry, node);
-        kv_clear_entry(kv, ent);
+        // TODO: Send to GC
         out_int(out, 1);
     }
 }
 
 bool keys_cb(HNode *node, void *arg) {
     RingBuf *out = (RingBuf *) arg;
-    vstr *key = container_of(node, Entry, node)->key;
+    Entry *ent = container_of(node, Entry, node);
+    vstr *key;
+    spin_rw_rlock(&ent->lock);
+    key = container_of(node, Entry, node)->key;
+    spin_rw_runlock(&ent->lock);
     out_vstr(out, key);
     return true;
 }
 
 // keys
 void do_keys(KVStore *kv, RingBuf *out) {
-    out_arr(out, (uint32_t) hm_size(&kv->store));
-    hm_foreach(&kv->store, keys_cb, out);
+    out_arr(out, (uint32_t) chm_size(&kv->store));
+    chm_foreach(&kv->store, keys_cb, out);
 }
 
 // zadd key score name
 void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *name) {
+    bool added = false;
     Entry key = {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
 
-    Entry *ent = NULL;
+    HNode *node = chm_upsert(&kv->store, &key.node, upsert_create, entry_eq);
     if (!node) {
-        ent = calloc(1, sizeof(Entry));
-        ent->type = ENT_ZSET;
-        vstr_cpy(&ent->key, kstr);
-        ent->node.hcode = key.node.hcode;
-        ent->heap_idx = (size_t) -1;
-        zset_init(&ent->val.zs);
-        hm_insert_unchecked(&kv->store, &ent->node);
+        out_err(out, ERR_UNKNOWN, "store not initialized");
+        return;
     } else {
-        ent = container_of(node, Entry, node);
-        if (ent->type != ENT_ZSET) {
-            out_err(out, ERR_BAD_TYP, "not a zset");
-            return;
+        Entry *ent = container_of(node, Entry, node);
+        spin_rw_wlock(&ent->lock);
+        switch (ent->type) {
+            case ENT_INIT:
+                ent->type = ENT_ZSET;
+                zset_init(&ent->val.zs);
+            case ENT_ZSET:
+                added = zset_insert(&ent->val.zs, name->dat, name->len, score);
+                break;
+            case ENT_STR:
+                out_err(out, ERR_BAD_TYP, "non zset entry");
+                return;
         }
+        spin_rw_wunlock(&ent->lock);
     }
 
-    const bool added = zset_insert(&ent->val.zs, name->dat, name->len, score);
-    return out_int(out, (int64_t) added);
+    out_int(out, (int64_t) added);
 }
 
 // zrem key name
@@ -213,12 +195,14 @@ void do_zrem(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
+    HNode *node = chm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
         out_int(out, 0);
     } else {
         Entry *ent = container_of(node, Entry, node);
+        spin_rw_wlock(&ent->lock);
         if (ent->type != ENT_ZSET) {
+            spin_rw_wunlock(&ent->lock);
             out_err(out, ERR_BAD_TYP, "not a zset");
             return;
         }
@@ -226,6 +210,7 @@ void do_zrem(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
         if (znode) {
             zset_delete(&ent->val.zs, znode);
         }
+        spin_rw_wunlock(&ent->lock);
         out_int(out, znode ? 1 : 0);
     }
 }
@@ -236,12 +221,14 @@ void do_zscore(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
+    HNode *node = chm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
         out_nil(out);
     } else {
         Entry *ent = container_of(node, Entry, node);
+        spin_rw_rlock(&ent->lock);
         if (ent->type != ENT_ZSET) {
+            spin_rw_runlock(&ent->lock);
             out_err(out, ERR_BAD_TYP, "not a zset");
             return;
         }
@@ -251,6 +238,7 @@ void do_zscore(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
         } else {
             out_nil(out);
         }
+        spin_rw_runlock(&ent->lock);
     }
 }
 
@@ -261,19 +249,22 @@ void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
+    HNode *node = chm_lookup(&kv->store, &key.node, entry_eq);
     if (!node) {
         out_arr(out, 0);
         return;
     }
 
     Entry *ent = container_of(node, Entry, node);
+    spin_rw_rlock(&ent->lock);
     if (ent->type != ENT_ZSET) {
+        spin_rw_runlock(&ent->lock);
         out_err(out, ERR_BAD_TYP, "not a zset");
         return;
     }
 
     if (limit <= 0) {
+        spin_rw_runlock(&ent->lock);
         out_arr(out, 0);
         return;
     }
@@ -291,46 +282,10 @@ void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *
         znode = next ? container_of(next, ZNode, tnode) : NULL;
         n += 2;
     }
+    spin_rw_runlock(&ent->lock);
     out_arr(out, n);
     out_buf(out, &buf);
     rb_destroy(&buf);
-}
-
-// pttl key
-void do_pttl(KVStore *kv, RingBuf *out, vstr *kstr) {
-    Entry key = {
-            .key = kstr,
-            .node.hcode = vstr_hash_rapid(kstr),
-    };
-    HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
-    if (!node) {
-        out_int(out, -2);
-        return;
-    }
-
-    const Entry *ent = container_of(node, Entry, node);
-    if (ent->heap_idx == (size_t) -1) {
-        out_int(out, -1);
-        return;
-    }
-
-    const uint64_t expire_at = kv->expire.nodes[ent->heap_idx].val;
-    const uint64_t now = get_clock_ms();
-    return out_int(out, expire_at > now ? (int64_t) (expire_at - now) : 0);
-}
-
-// pexpire key ttl
-void do_pexpire(KVStore *kv, RingBuf *out, vstr *kstr, int64_t ttl) {
-    Entry key = {
-            .key = kstr,
-            .node.hcode = vstr_hash_rapid(kstr),
-    };
-    HNode *node = hm_lookup(&kv->store, &key.node, entry_eq);
-    if (node) {
-        Entry *ent = container_of(node, Entry, node);
-        kv_set_ttl(kv, ent, ttl);
-    }
-    out_int(out, node ? 1 : 0);
 }
 
 void do_req(KVStore *kv, const simple_req *sreq, RingBuf *out) {
@@ -355,9 +310,8 @@ void do_req(KVStore *kv, const simple_req *sreq, RingBuf *out) {
             return do_zquery(kv, out, req.key, req.args.zquery_arg.score, req.args.zquery_arg.name,
                              req.args.zquery_arg.offset, req.args.zquery_arg.limit);
         case CMD_PTTL:
-            return do_pttl(kv, out, req.key);
         case CMD_PEXPIRE:
-            return do_pexpire(kv, out, req.key, req.args.ttl);
+            return out_err(out, ERR_UNKNOWN, "command not implemented");
         case CMD_BAD:
             return out_err(out, ERR_BAD_ARG, req.args.err);
         case CMD_UNKNOWN:
