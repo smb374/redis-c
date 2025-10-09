@@ -38,6 +38,8 @@ void csl_destroy(CSList *l);
 void *csl_lookup(CSList *l, uint64_t key);
 void *csl_remove(CSList *l, uint64_t key);
 void *csl_update(CSList *l, uint64_t key, void *val);
+uint64_t csl_find_min_key(CSList *l);
+void *csl_pop_min(CSList *l);
 
 #ifdef __cplusplus
 }

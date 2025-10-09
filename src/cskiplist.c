@@ -147,6 +147,56 @@ void *csl_remove(CSList *l, uint64_t key) {
     return val;
 }
 
+uint64_t csl_find_min_key(CSList *l) {
+    CSNode *node, *succ;
+    node = &l->head;
+    for (;;) {
+        succ = atomic_load_explicit(&node->next[0], memory_order_acquire);
+        if (!is_marked(succ))
+            break;
+        node = succ;
+    }
+    node = succ;
+
+    return node->key;
+}
+
+void *csl_pop_min(CSList *l) {
+    CSNode *node, *succ, *preds[CSKIPLIST_MAX_LEVELS], *succs[CSKIPLIST_MAX_LEVELS];
+    void *val;
+
+RETRY:
+    // 1. Find the first live node at the bottom level.
+    node = &l->head;
+    for (;;) {
+        succ = atomic_load_explicit(&node->next[0], memory_order_acquire);
+        if (!is_marked(succ))
+            break;
+        node = succ;
+    }
+    node = succ;
+
+    // 2. Check if the list is empty (first node is the tail).
+    if (node->key == UINT64_MAX) { // Assuming tail sentinel
+        return NULL;
+    }
+
+    // 3. Try to atomically "claim" the node by setting its value to NULL.
+    // This is the logical removal.
+    val = atomic_load_explicit(&node->ptr, memory_order_acquire);
+    if (!val ||
+        !atomic_compare_exchange_strong_explicit(&node->ptr, &val, NULL, memory_order_acq_rel, memory_order_relaxed)) {
+        goto RETRY;
+    }
+
+    // 4. Success! We claimed the node. Now physically remove it.
+    mark_node_ptrs(node);
+    // This search will finalize the physical removal and trigger the GC.
+    csl_search(l, node->key, preds, succs);
+
+    return val;
+}
+
 void *csl_update(CSList *l, uint64_t key, void *val) {
     bool snip;
     CSNode *preds[CSKIPLIST_MAX_LEVELS], *succs[CSKIPLIST_MAX_LEVELS];

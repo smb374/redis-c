@@ -115,3 +115,67 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
         ASSERT_EQ(csl_lookup(list, i), nullptr);
     }
 }
+
+TEST_F(CSkipListTest, PopMinSingleThreaded) {
+    qsbr_tid main_tid = qsbr_reg(g_qsbr_gc);
+    long val1 = 10, val2 = 20, val3 = 30;
+
+    // Pop from empty list
+    ASSERT_EQ(csl_pop_min(list), nullptr);
+
+    // Insert items
+    csl_update(list, 20, &val2);
+    csl_update(list, 10, &val1);
+    csl_update(list, 30, &val3);
+
+    // Pop items and check order
+    ASSERT_EQ(csl_pop_min(list), &val1);
+    qsbr_quiescent(g_qsbr_gc, main_tid);
+    ASSERT_EQ(csl_pop_min(list), &val2);
+    qsbr_quiescent(g_qsbr_gc, main_tid);
+    ASSERT_EQ(csl_pop_min(list), &val3);
+    qsbr_quiescent(g_qsbr_gc, main_tid);
+
+    // List should be empty now
+    ASSERT_EQ(csl_pop_min(list), nullptr);
+    ASSERT_EQ(csl_lookup(list, 10), nullptr);
+}
+
+TEST_F(CSkipListTest, PopMinConcurrent) {
+    const int num_keys = 4000;
+    const int num_threads = 4;
+    std::vector<long> values(num_keys);
+    std::vector<std::thread> threads;
+    std::atomic<int> pop_count(0);
+
+    // Pre-populate the list
+    for (int i = 0; i < num_keys; ++i) {
+        values[i] = i;
+        csl_update(list, i, &values[i]);
+    }
+
+    auto pop_worker = [&]() {
+        qsbr_tid tid = qsbr_reg(g_qsbr_gc);
+        while (true) {
+            void *val = csl_pop_min(list);
+            qsbr_quiescent(g_qsbr_gc, tid);
+            if (val) {
+                pop_count++;
+            } else if (csl_find_min_key(list) == UINT64_MAX) {
+                break;
+            }
+        }
+    };
+
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back(pop_worker);
+    }
+
+    for (auto &t: threads) {
+        t.join();
+    }
+
+    // Check that all keys were popped exactly once
+    ASSERT_EQ(pop_count.load(), num_keys);
+    ASSERT_EQ(csl_find_min_key(list), UINT64_MAX); // List should be empty
+}
