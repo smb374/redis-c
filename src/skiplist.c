@@ -13,7 +13,7 @@
 static bool seeded = false;
 
 // SKIPLIST_MAX_LEVELS = 64
-uint32_t grand() {
+static uint32_t grand() {
     // Mask is to handle when random() generates 0xFFFFFFFFFFFFFFFF
     // s.t. the ffs can report 64 on 0x8000000000000000
     return __builtin_ffsll(~(random() & 0x7FFFFFFFFFFFFFFF));

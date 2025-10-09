@@ -35,7 +35,7 @@ struct qsbr {
 };
 #endif
 
-extern qsbr glob_gc;
+extern qsbr *g_qsbr_gc;
 
 qsbr *qsbr_init(qsbr *gc, size_t back_logs);
 void qsbr_destroy(qsbr *gc);

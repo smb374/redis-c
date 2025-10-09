@@ -25,13 +25,14 @@ struct SkipList {
 typedef struct SkipList SkipList;
 
 void sl_init(SkipList *sl);
-SLNode* sl_search(SkipList *sl, SLNode *key, int (*cmp)(SLNode*, SLNode*));
-SLNode* sl_insert(SkipList *sl, SLNode *node, int (*cmp)(SLNode*, SLNode*));
-SLNode* sl_delete(SkipList *sl, SLNode *key, int (*cmp)(SLNode*, SLNode*));
-SLNode* sl_lookup_by_rank(SkipList *sl, uint32_t rank);
-uint32_t sl_get_rank(SkipList *sl, SLNode *key, int (*cmp)(SLNode*, SLNode*));
+SLNode *sl_search(SkipList *sl, SLNode *key, int (*cmp)(SLNode *, SLNode *));
+SLNode *sl_insert(SkipList *sl, SLNode *node, int (*cmp)(SLNode *, SLNode *));
+SLNode *sl_delete(SkipList *sl, SLNode *key, int (*cmp)(SLNode *, SLNode *));
+SLNode *sl_lookup_by_rank(SkipList *sl, uint32_t rank);
+uint32_t sl_get_rank(SkipList *sl, SLNode *key, int (*cmp)(SLNode *, SLNode *));
 
 #ifdef __cplusplus
 }
 #endif
 #endif
+

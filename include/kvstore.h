@@ -5,13 +5,17 @@
 #ifndef KVSTORE_H
 #define KVSTORE_H
 
-#include "thread_pool.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <stddef.h>
+
 #include "connection.h"
 #include "hashtable.h"
+#include "heap.h"
 #include "parse.h"
+#include "thread_pool.h"
 #include "utils.h"
 #include "zset.h"
 
@@ -38,6 +42,7 @@ struct Entry {
     HNode node;
     spin_rwlock lock;
 
+    size_t heap_idx;
     uint32_t type;
     vstr *key;
     union {
@@ -47,6 +52,7 @@ struct Entry {
 };
 struct KVStore {
     CHMap store;
+    Heap expire;
     ThreadPool pool;
     bool is_alloc;
 };

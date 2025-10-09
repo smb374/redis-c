@@ -50,6 +50,7 @@ add_library(common_lib STATIC
         src/thread_pool.c
         src/qsbr.c
         src/ebr.c
+        src/cskiplist.c
 )
 target_link_libraries(common_lib PUBLIC ev::ev)
 target_include_directories(common_lib PUBLIC
@@ -125,6 +126,10 @@ add_test(NAME ebr_test COMMAND ebr_test)
 add_executable(qsbr_test tests/qsbr_test.cpp)
 target_link_libraries(qsbr_test PRIVATE common_lib gtest_main pthread)
 add_test(NAME qsbr_test COMMAND qsbr_test)
+## cskiplist_test
+add_executable(cskiplist_test tests/cskiplist_test.cpp)
+target_link_libraries(cskiplist_test PRIVATE common_lib gtest_main pthread atomic)
+add_test(NAME cskiplist_test COMMAND cskiplist_test)
 
 set_tests_properties(
         ringbuf_test
@@ -140,6 +145,7 @@ set_tests_properties(
         chashmap_test
         ebr_test
         qsbr_test
+        cskiplist_test
         PROPERTIES LABELS "Unit"
 )
 
