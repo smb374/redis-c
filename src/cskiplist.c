@@ -24,6 +24,10 @@ static bool is_marked(void *ptr) { return ((uintptr_t) ptr & TAG_MASK) != 0; }
 static void *tag_ptr(void *ptr, int tag) { return (void *) (((uintptr_t) ptr & PTR_MASK) | (tag & TAG_MASK)); }
 static void *untag_ptr(void *ptr) { return (void *) ((uintptr_t) ptr & PTR_MASK); }
 
+int cskey_cmp(CSKey l, CSKey r) {
+    return (l.key ^ r.key) ? (l.key > r.key) - (l.key < r.key) : (l.nonce > r.nonce) - (l.nonce < r.nonce);
+}
+
 static void mark_node_ptrs(CSNode *x) {
     for (int i = x->level - 1; i >= 0; i--) {
         CSNode *x_next;
@@ -40,7 +44,7 @@ static void mark_node_ptrs(CSNode *x) {
     }
 }
 
-static void csl_search(CSList *l, uint64_t key, CSNode *preds[], CSNode *succs[]) {
+static void csl_search(CSList *l, CSKey key, CSNode *preds[], CSNode *succs[]) {
     CSNode *pred, *succ, *pnext, *snext;
 RETRY:
     pred = &l->head;
@@ -55,7 +59,9 @@ RETRY:
                     break;
                 succ = untag_ptr(snext);
             }
-            if (succ->key >= key)
+            // if (succ->key >= key)
+            //     break;
+            if (cskey_cmp(succ->key, key) >= 0)
                 break;
             pred = succ;
             pnext = snext;
@@ -87,10 +93,10 @@ CSList *csl_new(CSList *l) {
         l->is_alloc = false;
     }
 
-    l->head.key = 0;
+    l->head.key = (CSKey) {0, 0};
     l->head.level = CSKIPLIST_MAX_LEVELS;
     l->head.ptr = NULL;
-    l->tail.key = UINT64_MAX;
+    l->tail.key = (CSKey) {UINT64_MAX, UINT64_MAX};
     l->tail.level = CSKIPLIST_MAX_LEVELS;
     l->tail.ptr = NULL;
 
@@ -116,19 +122,22 @@ void csl_destroy(CSList *l) {
     }
 }
 
-void *csl_lookup(CSList *l, uint64_t key) {
+void *csl_lookup(CSList *l, CSKey key) {
     CSNode *preds[CSKIPLIST_MAX_LEVELS], *succs[CSKIPLIST_MAX_LEVELS];
     csl_search(l, key, preds, succs);
 
-    return (succs[0]->key == key) ? atomic_load_explicit(&succs[0]->ptr, memory_order_acquire) : NULL;
+    // return (succs[0]->key == key) ? atomic_load_explicit(&succs[0]->ptr, memory_order_acquire) : NULL;
+    return (!cskey_cmp(succs[0]->key, key)) ? atomic_load_explicit(&succs[0]->ptr, memory_order_acquire) : NULL;
 }
 
-void *csl_remove(CSList *l, uint64_t key) {
+void *csl_remove(CSList *l, CSKey key) {
     CSNode *preds[CSKIPLIST_MAX_LEVELS], *succs[CSKIPLIST_MAX_LEVELS];
     void *val;
     csl_search(l, key, preds, succs);
 
-    if (succs[0]->key != key)
+    // if (succs[0]->key != key)
+    //     return NULL;
+    if (cskey_cmp(succs[0]->key, key))
         return NULL;
 
     for (;;) {
@@ -147,14 +156,14 @@ void *csl_remove(CSList *l, uint64_t key) {
     return val;
 }
 
-uint64_t csl_find_min_key(CSList *l) {
+CSKey csl_find_min_key(CSList *l) {
     CSNode *node, *succ;
     node = &l->head;
     for (;;) {
         succ = atomic_load_explicit(&node->next[0], memory_order_acquire);
         if (!is_marked(succ))
             break;
-        node = succ;
+        node = untag_ptr(succ);
     }
     node = succ;
 
@@ -166,38 +175,33 @@ void *csl_pop_min(CSList *l) {
     void *val;
 
 RETRY:
-    // 1. Find the first live node at the bottom level.
     node = &l->head;
     for (;;) {
         succ = atomic_load_explicit(&node->next[0], memory_order_acquire);
         if (!is_marked(succ))
             break;
-        node = succ;
+        node = untag_ptr(succ);
     }
     node = succ;
 
-    // 2. Check if the list is empty (first node is the tail).
-    if (node->key == UINT64_MAX) { // Assuming tail sentinel
+    // if (node->key == UINT64_MAX)
+    //     return NULL;
+    if (!cskey_cmp(node->key, l->tail.key))
         return NULL;
-    }
 
-    // 3. Try to atomically "claim" the node by setting its value to NULL.
-    // This is the logical removal.
     val = atomic_load_explicit(&node->ptr, memory_order_acquire);
     if (!val ||
         !atomic_compare_exchange_strong_explicit(&node->ptr, &val, NULL, memory_order_acq_rel, memory_order_relaxed)) {
         goto RETRY;
     }
 
-    // 4. Success! We claimed the node. Now physically remove it.
     mark_node_ptrs(node);
-    // This search will finalize the physical removal and trigger the GC.
     csl_search(l, node->key, preds, succs);
 
     return val;
 }
 
-void *csl_update(CSList *l, uint64_t key, void *val) {
+void *csl_update(CSList *l, CSKey key, void *val) {
     bool snip;
     CSNode *preds[CSKIPLIST_MAX_LEVELS], *succs[CSKIPLIST_MAX_LEVELS];
     CSNode *nnode = calloc(1, sizeof(CSNode)), *pred, *succ, *nnext;
@@ -207,7 +211,8 @@ void *csl_update(CSList *l, uint64_t key, void *val) {
 
 RETRY:
     csl_search(l, key, preds, succs);
-    if (succs[0]->key == key) {
+    // if (succs[0]->key == key) {
+    if (!cskey_cmp(succs[0]->key, key)) {
         for (;;) {
             void *oval = atomic_load_explicit(&succs[0]->ptr, memory_order_acquire);
             if (!oval) {
@@ -243,7 +248,8 @@ RETRY:
                 break;
             }
 
-            if (succ->key == key) {
+            // if (succ->key == key) {
+            if (!cskey_cmp(succ->key, key)) {
                 succ = untag_ptr(succ->next[i]);
             }
             snip = atomic_compare_exchange_strong_explicit(&pred->next[i], &succ, nnode, memory_order_acq_rel,

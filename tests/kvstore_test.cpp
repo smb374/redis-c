@@ -9,9 +9,12 @@
 #include <vector>
 
 #include "parse.h"
+#include "qsbr.h"
 #include "ringbuf.h"
 #include "serialize.h"
 #include "utils.h"
+
+qsbr *g_qsbr_gc = nullptr;
 
 // --- Test Fixture ---
 class KVStoreTest : public ::testing::Test {
@@ -22,11 +25,13 @@ protected:
     void SetUp() override {
         kv = kv_new(nullptr);
         rb_init(&out, 1024);
+        g_qsbr_gc = qsbr_init(nullptr, 65536);
     }
 
     void TearDown() override {
         kv_clear(kv);
         rb_destroy(&out);
+        qsbr_destroy(g_qsbr_gc);
     }
 
     // Helper to create a simple_req from a vector of strings

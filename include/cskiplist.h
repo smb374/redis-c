@@ -10,6 +10,10 @@ extern "C" {
 
 #define CSKIPLIST_MAX_LEVELS 64
 
+struct CSKey {
+    uint64_t key, nonce;
+};
+typedef struct CSKey CSKey;
 struct CSNode;
 typedef struct CSNode CSNode;
 // `CSList`, unlike the serial `SList` in `skiplist.h`,
@@ -22,7 +26,7 @@ typedef _Atomic(void *) atomic_ptr;
 
 struct CSNode {
     int32_t level;
-    uint64_t key;
+    CSKey key;
     _Atomic(CSNode *) next[CSKIPLIST_MAX_LEVELS];
     atomic_ptr ptr;
 };
@@ -32,13 +36,14 @@ struct CSList {
 };
 #endif
 
+int cskey_cmp(CSKey l, CSKey r);
 CSList *csl_new(CSList *l);
 // NOTE: Should be run in single thread.
 void csl_destroy(CSList *l);
-void *csl_lookup(CSList *l, uint64_t key);
-void *csl_remove(CSList *l, uint64_t key);
-void *csl_update(CSList *l, uint64_t key, void *val);
-uint64_t csl_find_min_key(CSList *l);
+void *csl_lookup(CSList *l, CSKey key);
+void *csl_remove(CSList *l, CSKey key);
+void *csl_update(CSList *l, CSKey key, void *val);
+CSKey csl_find_min_key(CSList *l);
 void *csl_pop_min(CSList *l);
 
 #ifdef __cplusplus

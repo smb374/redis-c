@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <ev.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,8 +13,10 @@
 
 #include "connection.h"
 #include "cqueue.h"
+#include "cskiplist.h"
 #include "hashtable.h"
 #include "parse.h"
+#include "qsbr.h"
 #include "ringbuf.h"
 #include "serialize.h"
 #include "thread_pool.h"
@@ -21,6 +24,9 @@
 #include "zset.h"
 
 #define MAX_MSG 32 << 20
+
+static atomic_u64 g_nonce_cnt = 0;
+#define NOEXPIRE ((CSKey) {-1, 0})
 
 struct Work {
     cnode node;
@@ -96,6 +102,24 @@ static HNode *upsert_create(HNode *key) {
     return &ent->node;
 }
 
+static void entry_destroy(void *p) {
+    if (!p)
+        return;
+    Entry *ent = p;
+    ent->expire_ms = NOEXPIRE;
+    vstr_destroy(ent->key);
+    switch (ent->type) {
+        case ENT_STR:
+            vstr_destroy(ent->val.s);
+            break;
+        case ENT_ZSET:
+            zset_destroy(&ent->val.zs);
+            break;
+    }
+
+    free(ent);
+}
+
 bool entry_eq(HNode *ln, HNode *rn) {
     const Entry *le = container_of(ln, Entry, node);
     const Entry *re = container_of(rn, Entry, node);
@@ -141,6 +165,53 @@ void kv_stop(KVStore *kv) {
     logger(stderr, "INFO", "[master] Send stop signal...\n");
     cq_put(kv->pool.result_q, (cnode *) STOP_MAGIC);
     ev_async_send(EV_DEFAULT, &kv->pool.rev);
+}
+
+void kv_set_ttl(KVStore *kv, Entry *ent, int64_t ttl) {
+    spin_rw_wlock(&ent->lock);
+    // if (ent->expire_ms != (uint64_t) -1) {
+    if (cskey_cmp(ent->expire_ms, NOEXPIRE)) {
+        csl_remove(&kv->expire, ent->expire_ms);
+    }
+    if (ttl < 0) {
+        ent->expire_ms = NOEXPIRE;
+    } else {
+        ent->expire_ms.key = get_clock_ms() + ttl;
+        ent->expire_ms.nonce = atomic_fetch_add_explicit(&g_nonce_cnt, 1, memory_order_relaxed);
+        csl_update(&kv->expire, ent->expire_ms, ent);
+    }
+    spin_rw_wunlock(&ent->lock);
+}
+
+// Returns the min not-expired key
+CSKey kv_clean_expired(KVStore *kv) {
+    // No need to lock as we don't read the content of ent
+    CSKey now = {get_clock_ms(), UINT64_MAX};
+    CSKey expire_ms = csl_find_min_key(&kv->expire);
+    // while (now >= expire_ms) {
+    while (cskey_cmp(now, expire_ms) >= 0) {
+        Entry *ent = csl_pop_min(&kv->expire);
+        if (ent) {
+            spin_rw_rlock(&ent->lock);
+            // if (ent->expire_ms > now) {
+            if (cskey_cmp(ent->expire_ms, now) > 0) {
+                csl_update(&kv->expire, ent->expire_ms, ent);
+                expire_ms = ent->expire_ms;
+            } else {
+                HNode *res = chm_delete(&kv->store, &ent->node, entry_eq);
+                if (res) {
+                    qsbr_alloc_cb(g_qsbr_gc, entry_destroy, ent);
+                }
+                expire_ms = csl_find_min_key(&kv->expire);
+            }
+            spin_rw_runlock(&ent->lock);
+        } else {
+            expire_ms = csl_find_min_key(&kv->expire);
+        }
+        now.key = get_clock_ms();
+    }
+
+    return expire_ms;
 }
 
 // get key

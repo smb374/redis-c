@@ -9,6 +9,7 @@
 #include "connection.h"
 #include "kvstore.h"
 #include "parse.h"
+#include "qsbr.h"
 #include "utils.h"
 
 #define MAX_MSG 32 << 20
@@ -16,6 +17,7 @@
 
 SrvConn srv;
 KVStore g_data;
+qsbr *g_qsbr_gc = NULL;
 
 ConnState try_one_req(Conn *c) {
     if (rb_size(&c->income) < 4)
@@ -50,6 +52,7 @@ static void exit_cb(EV_P_ ev_signal *w, const int revents) {
 
 int main() {
     // Init KVStore.
+    g_qsbr_gc = qsbr_init(NULL, 65536);
     kv_new(&g_data);
     struct ev_loop *loop = ev_default_loop(0);
     // Signal Handling
@@ -78,5 +81,6 @@ int main() {
     // Epilogue
     kv_clear(&g_data);
     ev_default_destroy();
+    qsbr_destroy(g_qsbr_gc);
     logger(stderr, "INFO", "[main] Exit main loop\n");
 }

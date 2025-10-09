@@ -15,7 +15,6 @@ extern "C" {
 
 #include "connection.h"
 #include "hashtable.h"
-#include "heap.h"
 #include "parse.h"
 #include "thread_pool.h"
 #include "utils.h"
@@ -44,7 +43,7 @@ struct Entry {
     HNode node;
     spin_rwlock lock;
 
-    uint64_t expire_ms;
+    CSKey expire_ms;
     uint32_t type;
     vstr *key;
     union {

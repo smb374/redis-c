@@ -40,26 +40,26 @@ TEST_F(CSkipListTest, InsertLookupRemove) {
     long val2 = 200;
 
     // Insert
-    ASSERT_EQ(csl_update(list, 10, &val1), nullptr);
-    ASSERT_EQ(csl_update(list, 20, &val2), nullptr);
+    ASSERT_EQ(csl_update(list, {10, 0}, &val1), nullptr);
+    ASSERT_EQ(csl_update(list, {20, 0}, &val2), nullptr);
 
     // Lookup
-    ASSERT_EQ(csl_lookup(list, 10), &val1);
-    ASSERT_EQ(csl_lookup(list, 20), &val2);
-    ASSERT_EQ(csl_lookup(list, 30), nullptr);
+    ASSERT_EQ(csl_lookup(list, {10, 0}), &val1);
+    ASSERT_EQ(csl_lookup(list, {20, 0}), &val2);
+    ASSERT_EQ(csl_lookup(list, {30, 0}), nullptr);
 
     // Update
     long val3 = 300;
-    ASSERT_EQ(csl_update(list, 10, &val3), &val1);
-    ASSERT_EQ(csl_lookup(list, 10), &val3);
+    ASSERT_EQ(csl_update(list, {10, 0}, &val3), &val1);
+    ASSERT_EQ(csl_lookup(list, {10, 0}), &val3);
 
     // Remove
-    ASSERT_EQ(csl_remove(list, 10), &val3);
+    ASSERT_EQ(csl_remove(list, {10, 0}), &val3);
     qsbr_quiescent(g_qsbr_gc, main_tid); // Allow GC to proceed
-    ASSERT_EQ(csl_lookup(list, 10), nullptr);
+    ASSERT_EQ(csl_lookup(list, {10, 0}), nullptr);
 
     // Remove non-existent
-    ASSERT_EQ(csl_remove(list, 10), nullptr);
+    ASSERT_EQ(csl_remove(list, {10, 0}), nullptr);
     qsbr_quiescent(g_qsbr_gc, main_tid);
 }
 
@@ -78,7 +78,7 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
 
         // Insert all keys
         for (uint64_t i = start_key; i < end_key; ++i) {
-            csl_update(list, i, &values[i - start_key]);
+            csl_update(list, {i, 0}, &values[i - start_key]);
         }
 
         // Mark quiescent state
@@ -86,7 +86,7 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
 
         // Verify all inserted keys can be found
         for (uint64_t i = start_key; i < end_key; ++i) {
-            ASSERT_EQ(csl_lookup(list, i), &values[i - start_key]);
+            ASSERT_EQ(csl_lookup(list, {i, 0}), &values[i - start_key]);
         }
 
         // Mark quiescent state
@@ -94,7 +94,7 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
 
         // Remove all keys
         for (uint64_t i = start_key; i < end_key; ++i) {
-            ASSERT_EQ(csl_remove(list, i), &values[i - start_key]);
+            ASSERT_EQ(csl_remove(list, {i, 0}), &values[i - start_key]);
         }
         // Make sure that all callbacks are visible & ran.
         for (int i = 0; i < 4; i++) {
@@ -111,8 +111,8 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
         t.join();
     }
 
-    for (int i = 0; i < num_threads * keys_per_thread; ++i) {
-        ASSERT_EQ(csl_lookup(list, i), nullptr);
+    for (uint64_t i = 0; i < num_threads * keys_per_thread; ++i) {
+        ASSERT_EQ(csl_lookup(list, {i, 0}), nullptr);
     }
 }
 
@@ -124,9 +124,9 @@ TEST_F(CSkipListTest, PopMinSingleThreaded) {
     ASSERT_EQ(csl_pop_min(list), nullptr);
 
     // Insert items
-    csl_update(list, 20, &val2);
-    csl_update(list, 10, &val1);
-    csl_update(list, 30, &val3);
+    csl_update(list, {20, 0}, &val2);
+    csl_update(list, {10, 0}, &val1);
+    csl_update(list, {30, 0}, &val3);
 
     // Pop items and check order
     ASSERT_EQ(csl_pop_min(list), &val1);
@@ -138,7 +138,7 @@ TEST_F(CSkipListTest, PopMinSingleThreaded) {
 
     // List should be empty now
     ASSERT_EQ(csl_pop_min(list), nullptr);
-    ASSERT_EQ(csl_lookup(list, 10), nullptr);
+    ASSERT_EQ(csl_lookup(list, {10, 0}), nullptr);
 }
 
 TEST_F(CSkipListTest, PopMinConcurrent) {
@@ -149,9 +149,9 @@ TEST_F(CSkipListTest, PopMinConcurrent) {
     std::atomic<int> pop_count(0);
 
     // Pre-populate the list
-    for (int i = 0; i < num_keys; ++i) {
+    for (uint64_t i = 0; i < num_keys; ++i) {
         values[i] = i;
-        csl_update(list, i, &values[i]);
+        csl_update(list, {i, 0}, &values[i]);
     }
 
     auto pop_worker = [&]() {
@@ -161,7 +161,7 @@ TEST_F(CSkipListTest, PopMinConcurrent) {
             qsbr_quiescent(g_qsbr_gc, tid);
             if (val) {
                 pop_count++;
-            } else if (csl_find_min_key(list) == UINT64_MAX) {
+            } else if (csl_find_min_key(list).key == UINT64_MAX) {
                 break;
             }
         }
@@ -177,5 +177,5 @@ TEST_F(CSkipListTest, PopMinConcurrent) {
 
     // Check that all keys were popped exactly once
     ASSERT_EQ(pop_count.load(), num_keys);
-    ASSERT_EQ(csl_find_min_key(list), UINT64_MAX); // List should be empty
+    ASSERT_EQ(csl_find_min_key(list).key, UINT64_MAX); // List should be empty
 }
