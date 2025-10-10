@@ -12,7 +12,6 @@ extern "C" {
 #include <stdint.h>
 
 #include "qsbr.h"
-#include "utils.h"
 
 #define REHASH_WORK 64
 #define MAX_LOAD 8
@@ -58,7 +57,6 @@ struct CHMap {
     alignas(64) atomic_size_t size; // Use atomic so we don't need a lock for it.
     alignas(64) pthread_mutex_t nb_lock[BUCKET_LOCKS];
     alignas(64) pthread_mutex_t ob_lock[BUCKET_LOCKS];
-    qsbr gc;
     bool is_alloc;
 };
 #endif
@@ -72,7 +70,6 @@ size_t hm_size(const HMap *hm);
 void hm_foreach(const HMap *hm, bool (*f)(HNode *, void *), void *arg);
 
 CHMap *chm_new(CHMap *hm);
-void chm_register(CHMap *hm);
 HNode *chm_lookup(CHMap *hm, HNode *key, bool (*eq)(HNode *, HNode *));
 HNode *chm_upsert(CHMap *hm, HNode *key, HNode *(*create)(HNode *), bool (*eq)(HNode *, HNode *));
 bool chm_insert(CHMap *hm, HNode *node, bool (*eq)(HNode *, HNode *));

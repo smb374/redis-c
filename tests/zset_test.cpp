@@ -4,20 +4,19 @@
 #include "zset.h"
 #include "utils.h"
 
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
-#include <algorithm>
 
 // --- Test Fixture ---
 
+qsbr *g_qsbr_gc = nullptr;
 class ZSetTest : public ::testing::Test {
 protected:
     ZSet zset;
 
-    void SetUp() override {
-        zset_init(&zset);
-    }
+    void SetUp() override { zset_init(&zset); }
 
     void TearDown() override {
         // This is critical for preventing memory leaks. We must manually free

@@ -1,14 +1,16 @@
-#include <atomic>
 #include <gtest/gtest.h>
-#include <mutex>
 #include <random>
 #include <thread>
 #include <vector>
 
 extern "C" {
 #include "hashtable.h"
+#include "qsbr.h"
 #include "utils.h"
 }
+
+qsbr *g_qsbr_gc = nullptr;
+static __thread qsbr_tid tid;
 
 // --- Test Entry Structure ---
 struct TestEntry {
@@ -26,56 +28,46 @@ static bool test_entry_eq(HNode *lhs, HNode *rhs) {
 // --- Global Test State ---
 class CHMapTest : public ::testing::Test {
 protected:
-    static CHMap *g_chmap;
-    static std::atomic<bool> g_initialized;
-    // Purgatory for nodes that have been deleted but are pending safe reclamation.
-    static std::vector<TestEntry *> g_purgatory;
-    static std::mutex g_purgatory_mutex;
+    CHMap *chmap = nullptr;
 
-    static void SetUpTestSuite() {
-        bool expected = false;
-        if (g_initialized.compare_exchange_strong(expected, true)) {
-            g_chmap = chm_new(nullptr);
-        }
+    void SetUp() override {
+        g_qsbr_gc = qsbr_init(nullptr, 65536);
+        ASSERT_NE(g_qsbr_gc, nullptr);
+        chmap = chm_new(nullptr);
+        ASSERT_NE(chmap, nullptr);
     }
 
-    static void TearDownTestSuite() {
-        bool expected = true;
-        if (g_initialized.compare_exchange_strong(expected, false)) {
-            chm_clear(g_chmap); // Use the map's own cleanup function
-            g_chmap = nullptr;
-
-            // Now it's safe to free the nodes from purgatory
-            for (auto *entry: g_purgatory) {
-                delete entry;
-            }
-            g_purgatory.clear();
-        }
+    void TearDown() override {
+        chm_clear(chmap);
+        qsbr_destroy(g_qsbr_gc);
+        g_qsbr_gc = nullptr;
     }
-
-    void SetUp() override {}
 };
-
-CHMap *CHMapTest::g_chmap = nullptr;
-std::atomic<bool> CHMapTest::g_initialized{false};
-std::vector<TestEntry *> CHMapTest::g_purgatory;
-std::mutex CHMapTest::g_purgatory_mutex;
 
 
 // --- Test Cases ---
 
+static HNode *upsert_create(HNode *key) {
+    auto *query = container_of(key, TestEntry, node);
+    auto *new_entry = new TestEntry{{}, query->key, query->value};
+    new_entry->node.hcode = query->node.hcode;
+    return &new_entry->node;
+}
+
 TEST_F(CHMapTest, SingleThreadInsertAndLookup) {
-    chm_register(g_chmap);
     uint64_t key = 1001;
     auto *entry = new TestEntry{{}, key, key * 2};
     entry->node.hcode = int_hash_rapid(key);
 
-    bool success = chm_insert(g_chmap, &entry->node, test_entry_eq);
-    ASSERT_TRUE(success);
+    HNode *result_node = chm_upsert(chmap, &entry->node, upsert_create, test_entry_eq);
+    ASSERT_NE(result_node, nullptr);
+    // In this case, it should be a new insertion, so the returned node is the one we passed.
+    ASSERT_EQ(container_of(result_node, TestEntry, node)->value, key * 2);
+    delete entry; // The entry is copied in upsert_create, so we can delete the stack one.
 
     TestEntry query{{}, key};
     query.node.hcode = int_hash_rapid(key);
-    HNode *result = chm_lookup(g_chmap, &query.node, test_entry_eq);
+    HNode *result = chm_lookup(chmap, &query.node, test_entry_eq);
 
     ASSERT_NE(result, nullptr);
     auto *found = container_of(result, TestEntry, node);
@@ -83,58 +75,27 @@ TEST_F(CHMapTest, SingleThreadInsertAndLookup) {
 }
 
 TEST_F(CHMapTest, SingleThreadSafeDelete) {
-    chm_register(g_chmap);
+    qsbr_tid tid = qsbr_reg(g_qsbr_gc);
     uint64_t key = 2002;
     auto *entry = new TestEntry{{}, key, key * 2};
     entry->node.hcode = int_hash_rapid(key);
 
-    chm_insert(g_chmap, &entry->node, test_entry_eq);
+    chm_upsert(chmap, &entry->node, upsert_create, test_entry_eq);
+    delete entry;
 
     TestEntry query{{}, key};
     query.node.hcode = int_hash_rapid(key);
-    HNode *deleted_node = chm_delete(g_chmap, &query.node, test_entry_eq);
+    HNode *deleted_node = chm_delete(chmap, &query.node, test_entry_eq);
 
     ASSERT_NE(deleted_node, nullptr);
-    EXPECT_EQ(&entry->node, deleted_node);
 
-    // Instead of freeing immediately, add to purgatory for deferred cleanup.
-    // This is the correct, safe memory handling pattern.
-    {
-        std::lock_guard<std::mutex> lock(g_purgatory_mutex);
-        g_purgatory.push_back(entry);
-    }
+    // Use QSBR to reclaim the memory
+    qsbr_alloc_cb(g_qsbr_gc, [](void *p) { delete container_of((HNode *) p, TestEntry, node); }, deleted_node);
+    qsbr_quiescent(g_qsbr_gc, tid);
 
     // Verify it's gone
-    HNode *result = chm_lookup(g_chmap, &query.node, test_entry_eq);
+    HNode *result = chm_lookup(chmap, &query.node, test_entry_eq);
     EXPECT_EQ(result, nullptr);
-}
-
-TEST_F(CHMapTest, MultiThreadContendedInsert) {
-    const int num_threads = 8;
-    const int inserts_per_thread = 10000;
-    std::vector<std::thread> threads;
-
-    for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back([&]() {
-            chm_register(g_chmap);
-            for (int j = 0; j < inserts_per_thread; ++j) {
-                // All threads contend on the same small key space
-                uint64_t key = j % 100;
-                auto *entry = new TestEntry{{}, key, (uint64_t) j};
-                entry->node.hcode = int_hash_rapid(key);
-                // Insert will either add a new node or replace an existing one.
-                // The returned old node (if any) must be reclaimed safely.
-                bool success = chm_insert(g_chmap, &entry->node, test_entry_eq);
-                if (!success) { // Insert failed, so we can delete the new entry
-                    delete entry;
-                }
-            }
-        });
-    }
-
-    for (auto &t: threads) {
-        t.join();
-    }
 }
 
 TEST_F(CHMapTest, MultiThreadMixedReadWriteDelete) {
@@ -146,43 +107,83 @@ TEST_F(CHMapTest, MultiThreadMixedReadWriteDelete) {
     for (int i = 0; i < 1000; ++i) {
         auto *entry = new TestEntry{{}, (uint64_t) i, (uint64_t) i};
         entry->node.hcode = int_hash_rapid(i);
-        chm_insert(g_chmap, &entry->node, test_entry_eq);
+        chm_upsert(chmap, &entry->node, upsert_create, test_entry_eq);
+        delete entry;
     }
 
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back([&]() {
-            chm_register(g_chmap);
+            qsbr_tid tid = qsbr_reg(g_qsbr_gc);
             std::mt19937 rng(std::hash<std::thread::id>{}(std::this_thread::get_id()));
             std::uniform_int_distribution<uint64_t> key_dist(0, 999);
             std::uniform_int_distribution<int> op_dist(0, 99);
 
             for (int j = 0; j < ops_per_thread; ++j) {
                 uint64_t key = key_dist(rng);
-                TestEntry query{{}, key};
-                query.node.hcode = int_hash_rapid(key);
-
                 int op = op_dist(rng);
+
                 if (op < 80) { // 80% Lookup
-                    chm_lookup(g_chmap, &query.node, test_entry_eq);
-                } else if (op < 90) { // 10% Insert
-                    auto *entry = new TestEntry{{}, key, key};
+                    TestEntry query{{}, key};
+                    query.node.hcode = int_hash_rapid(key);
+                    chm_lookup(chmap, &query.node, test_entry_eq);
+                } else if (op < 90) { // 10% Upsert
+                    auto *entry = new TestEntry{{}, key, key + 1}; // New value
                     entry->node.hcode = int_hash_rapid(key);
-                    if (!chm_insert(g_chmap, &entry->node, test_entry_eq)) {
-                        delete entry; // Insert failed, key exists
-                    }
+                    chm_upsert(chmap, &entry->node, upsert_create, test_entry_eq);
+                    delete entry;
                 } else { // 10% Delete
-                    HNode *deleted = chm_delete(g_chmap, &query.node, test_entry_eq);
+                    TestEntry query{{}, key};
+                    query.node.hcode = int_hash_rapid(key);
+                    HNode *deleted = chm_delete(chmap, &query.node, test_entry_eq);
                     if (deleted) {
-                        // Correctly defer freeing the node
-                        std::lock_guard<std::mutex> lock(g_purgatory_mutex);
-                        g_purgatory.push_back(container_of(deleted, TestEntry, node));
+                        qsbr_alloc_cb(
+                                g_qsbr_gc, [](void *p) { delete container_of((HNode *) p, TestEntry, node); }, deleted);
                     }
                 }
             }
+            qsbr_quiescent(g_qsbr_gc, tid);
         });
     }
 
     for (auto &t: threads) {
         t.join();
     }
+}
+
+TEST_F(CHMapTest, MultiThreadAllNodesPresent) {
+    const int num_threads = 8;
+    const int keys_per_thread = 1000;
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&, thread_id = i]() {
+            qsbr_tid tid = qsbr_reg(g_qsbr_gc);
+            uint64_t start_key = thread_id * keys_per_thread;
+            uint64_t end_key = start_key + keys_per_thread;
+
+            for (uint64_t k = start_key; k < end_key; ++k) {
+                auto *entry = new TestEntry{{}, k, k};
+                entry->node.hcode = int_hash_rapid(k);
+                chm_upsert(chmap, &entry->node, upsert_create, test_entry_eq);
+                delete entry;
+            }
+            qsbr_quiescent(g_qsbr_gc, tid);
+        });
+    }
+
+    for (auto &t: threads) {
+        t.join();
+    }
+
+    // Verify all nodes are present
+    for (uint64_t k = 0; k < num_threads * keys_per_thread; ++k) {
+        TestEntry query{{}, k};
+        query.node.hcode = int_hash_rapid(k);
+        HNode *result = chm_lookup(chmap, &query.node, test_entry_eq);
+        ASSERT_NE(result, nullptr) << "Key " << k << " was not found.";
+        auto *found = container_of(result, TestEntry, node);
+        ASSERT_EQ(found->key, k);
+    }
+
+    ASSERT_EQ(chm_size(chmap), num_threads * keys_per_thread);
 }

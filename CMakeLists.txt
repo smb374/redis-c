@@ -51,6 +51,7 @@ add_library(common_lib STATIC
         src/qsbr.c
         src/ebr.c
         src/cskiplist.c
+        src/phmap.c
 )
 target_link_libraries(common_lib PUBLIC ev::ev)
 target_include_directories(common_lib PUBLIC
@@ -130,6 +131,10 @@ add_test(NAME qsbr_test COMMAND qsbr_test)
 add_executable(cskiplist_test tests/cskiplist_test.cpp)
 target_link_libraries(cskiplist_test PRIVATE common_lib gtest_main pthread atomic)
 add_test(NAME cskiplist_test COMMAND cskiplist_test)
+## phmap_test
+add_executable(phmap_test tests/phmap_test.cpp)
+target_link_libraries(phmap_test PRIVATE common_lib gtest_main pthread atomic)
+add_test(NAME phmap_test COMMAND phmap_test)
 
 set_tests_properties(
         ringbuf_test
@@ -146,6 +151,7 @@ set_tests_properties(
         ebr_test
         qsbr_test
         cskiplist_test
+        phmap_test
         PROPERTIES LABELS "Unit"
 )
 

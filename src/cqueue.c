@@ -1,4 +1,5 @@
 #include "cqueue.h"
+
 #include <assert.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -6,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+
+#include "utils.h"
 
 cqueue *cq_init(cqueue *q, size_t cap) {
     if (!q) {
@@ -28,30 +31,29 @@ void cq_destroy(cqueue *q) {
         free(q);
 }
 bool cq_put(cqueue *q, cnode *node) {
-    size_t count = atomic_fetch_add_explicit(&q->count, 1, memory_order_acquire);
+    size_t count = FAA(&q->count, 1, memory_order_acquire);
     if (count >= q->cap) {
         // queue is full
-        atomic_fetch_sub_explicit(&q->count, 1, memory_order_release);
+        FAS(&q->count, 1, memory_order_release);
         return false;
     }
 
-    size_t head = atomic_load_explicit(&q->head, memory_order_acquire), nhead;
+    size_t head = LOAD(&q->head, memory_order_acquire), nhead;
     for (;;) {
         nhead = (head + 1) % q->cap;
-        if (atomic_compare_exchange_strong_explicit(&q->head, &head, nhead, memory_order_acq_rel,
-                                                    memory_order_acquire)) {
+        if (CMPXCHG(&q->head, &head, nhead, memory_order_acq_rel, memory_order_acquire)) {
             // CMPEXG success, q->head is nhead now.
             break;
         }
         // Acquires new head on fail
     }
     // Since slot is acquired after CMPEXG success for head, we can just store the slot.
-    cnode *old = atomic_exchange_explicit(&q->buf[head], node, memory_order_release);
+    cnode *old = XCHG(&q->buf[head], node, memory_order_release);
     assert(old == NULL); // Sanity check
     return true;
 }
 cnode *cq_pop(cqueue *q) {
-    cnode *ret = atomic_exchange_explicit(&q->buf[q->tail], NULL, memory_order_acquire);
+    cnode *ret = XCHG(&q->buf[q->tail], NULL, memory_order_acquire);
     if (!ret)
         /* a thread is adding to the queue, but hasn't done the write yet
          * to actually put the item in. Act as if nothing is in the queue.
@@ -62,9 +64,9 @@ cnode *cq_pop(cqueue *q) {
         return NULL;
 
     q->tail = (q->tail + 1) % q->cap;
-    size_t r = atomic_fetch_sub_explicit(&q->count, 1, memory_order_release);
+    size_t r = FAS(&q->count, 1, memory_order_release);
     assert(r > 0);
     return ret;
 }
-size_t cq_size(cqueue *q) { return atomic_load_explicit(&q->count, memory_order_relaxed); }
+size_t cq_size(cqueue *q) { return LOAD(&q->count, memory_order_relaxed); }
 size_t cq_cap(cqueue *q) { return q->cap; }

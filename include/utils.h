@@ -10,8 +10,9 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#define container_of(ptr, T, member) ((T *) ((char *) (ptr) - offsetof(T, member)))
 
+#define container_of(ptr, T, member) ((T *) ((char *) (ptr) - offsetof(T, member)))
+#define IS_POW_2(n) (((n) > 0) && (((n) & ((n) - 1)) == 0))
 struct vstr {
     uint32_t len;
     char dat[];
@@ -24,6 +25,25 @@ typedef struct spin_rwlock spin_rwlock;
 #ifndef __cplusplus
 #include <stdalign.h>
 #include <stdatomic.h>
+
+enum {
+    RELAXED = memory_order_relaxed,
+    CONSUME = memory_order_consume,
+    ACQUIRE = memory_order_acquire,
+    RELEASE = memory_order_release,
+    ACQ_REL = memory_order_acq_rel,
+    SEQ_CST = memory_order_seq_cst,
+};
+
+#define LOAD(t, o) atomic_load_explicit((t), (o))
+#define STORE(t, v, o) atomic_store_explicit((t), (v), (o))
+#define CMPXCHG(t, e, v, os, of) atomic_compare_exchange_strong_explicit((t), (e), (v), (os), (of))
+#define WCMPXCHG(t, e, v, os, of) atomic_compare_exchange_weak_explicit((t), (e), (v), (os), (of))
+#define XCHG(t, v, o) atomic_exchange_explicit((t), (v), (o))
+#define FAA(t, v, o) atomic_fetch_add_explicit((t), (v), (o))
+#define FAS(t, v, o) atomic_fetch_sub_explicit((t), (v), (o))
+
+typedef _Atomic(uint64_t) atomic_u64;
 struct spin_rwlock {
     alignas(64) atomic_int ticket;
 };

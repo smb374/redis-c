@@ -1,13 +1,17 @@
 #include <atomic>
 #include <benchmark/benchmark.h>
+#include <cstdio>
 #include <random>
 #include <thread>
 
 extern "C" {
 #include "hashtable.h"
+#include "qsbr.h"
 #include "utils.h"
 }
 
+qsbr *g_qsbr_gc = nullptr;
+static __thread qsbr_tid tid;
 // --- Test Entry ---
 
 struct CTestEntry {
@@ -36,6 +40,7 @@ public:
         // First thread initializes the map
         bool expected = false;
         if (g_initialized.compare_exchange_strong(expected, true)) {
+            g_qsbr_gc = qsbr_init(nullptr, 65536);
             g_chmap = chm_new(nullptr);
 
             // Pre-populate with 500k entries for lookup/delete tests
@@ -57,8 +62,7 @@ public:
             }
         }
 
-        // All threads register with the map for QSBR
-        chm_register(g_chmap);
+        tid = qsbr_reg(g_qsbr_gc);
 
         // Track active threads
         g_thread_count.fetch_add(1, std::memory_order_relaxed);
@@ -71,6 +75,7 @@ public:
         if (remaining == 0) {
             // Reset for next benchmark
             g_teardown_count.fetch_add(1, std::memory_order_relaxed);
+            qsbr_destroy(g_qsbr_gc);
 
             // Clear the map to reset QSBR state
             chm_clear(g_chmap);
