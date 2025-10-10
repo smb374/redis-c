@@ -104,7 +104,6 @@ static void idle_timer_cb(EV_P_ ev_timer *w, const int revents) {
         Conn *c = container_of(idles.next, Conn, node);
         next = c->last_active + TIMEOUT;
         if (next >= now) {
-            ev_timer_stop(EV_A_ w);
             ev_timer_set(w, (double) (next - now) / 1000., 0.);
             ev_timer_start(EV_A_ w);
             return;
@@ -113,6 +112,7 @@ static void idle_timer_cb(EV_P_ ev_timer *w, const int revents) {
         conn_clear(c);
     }
     ev_timer_set(w, TIMEOUT_S, 0.);
+    ev_timer_start(EV_A_ w);
 }
 
 void srv_init(SrvConn *c, int fd, const struct sockaddr *addr, socklen_t len) {

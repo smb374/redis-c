@@ -275,42 +275,46 @@ TEST_F(KVStoreTest, ZQueryCommand) {
     free_req(zquery_req2);
 }
 
-// TEST_F(KVStoreTest, Expiration) {
-//     // SET key value
-//     OwnedRequest set_req = create_req({"set", "tempkey", "tempvalue"});
-//     do_owned_req(kv, &set_req, &out);
-//     verify_out_nil();
-//     free_req(set_req);
-//
-//     // PEXPIRE key 50
-//     OwnedRequest expire_req = create_req({"pexpire", "tempkey", "50"});
-//     do_owned_req(kv, &expire_req, &out);
-//     verify_out_int(1);
-//     free_req(expire_req);
-//
-//     // PTTL key
-//     OwnedRequest pttl_req = create_req({"pttl", "tempkey"});
-//     do_owned_req(kv, &pttl_req, &out);
-//     uint8_t tag;
-//     rb_read(&out, &tag, 1);
-//     ASSERT_EQ(tag, TAG_INT);
-//     int64_t ttl;
-//     rb_read(&out, (uint8_t *) &ttl, 8);
-//     ASSERT_GT(ttl, 0);
-//     ASSERT_LE(ttl, 50);
-//     free_req(pttl_req);
-//
-//     // Wait for key to expire
-//     usleep(60 * 1000); // 60ms
-//
-//     // process_timer(kv);
-//
-//     // GET expired key
-//     OwnedRequest get_expired_req = create_req({"get", "tempkey"});
-//     do_owned_req(kv, &get_expired_req, &out);
-//     verify_out_nil();
-//     free_req(get_expired_req);
-// }
+TEST_F(KVStoreTest, Expiration) {
+    qsbr_tid main_tid = qsbr_reg(g_qsbr_gc);
+
+    // SET key value
+    OwnedRequest set_req = create_req({"set", "tempkey", "tempvalue"});
+    do_owned_req(kv, &set_req, &out);
+    verify_out_nil();
+    free_req(set_req);
+
+    // PEXPIRE key 50
+    OwnedRequest expire_req = create_req({"pexpire", "tempkey", "50"});
+    do_owned_req(kv, &expire_req, &out);
+    verify_out_int(1);
+    free_req(expire_req);
+
+    // PTTL key
+    OwnedRequest pttl_req = create_req({"pttl", "tempkey"});
+    do_owned_req(kv, &pttl_req, &out);
+    uint8_t tag;
+    rb_read(&out, &tag, 1);
+    ASSERT_EQ(tag, TAG_INT);
+    int64_t ttl;
+    rb_read(&out, (uint8_t *) &ttl, 8);
+    ASSERT_GT(ttl, 0);
+    ASSERT_LE(ttl, 50);
+    free_req(pttl_req);
+
+    // Wait for key to expire
+    usleep(60 * 1000); // 60ms
+
+    // Manually process expired keys
+    kv_clean_expired(kv);
+    qsbr_quiescent(g_qsbr_gc, main_tid); // Allow GC to proceed
+
+    // GET expired key
+    OwnedRequest get_expired_req = create_req({"get", "tempkey"});
+    do_owned_req(kv, &get_expired_req, &out);
+    verify_out_nil();
+    free_req(get_expired_req);
+}
 
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);

@@ -5,15 +5,16 @@
 #ifndef KVSTORE_H
 #define KVSTORE_H
 
-#include "cskiplist.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#include <ev.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "connection.h"
+#include "cskiplist.h"
 #include "hashtable.h"
 #include "parse.h"
 #include "thread_pool.h"
@@ -32,6 +33,8 @@ enum ErrType {
     ERR_BAD_TYP = 3,
     ERR_BAD_ARG = 4,
 };
+
+#define NOEXPIRE ((CSKey) {-1, 0})
 
 struct KVStore;
 typedef struct KVStore KVStore;
@@ -55,6 +58,7 @@ struct KVStore {
     CHMap store;
     CSList expire;
     ThreadPool pool;
+    ev_timer expire_w;
     bool is_alloc;
 };
 #endif
@@ -75,6 +79,8 @@ void kv_start(KVStore *kv);
 // Currently by pushing a STOP_MAGIC to result queue
 void kv_stop(KVStore *kv);
 
+void kv_set_ttl(KVStore *kv, Entry *ent, int64_t ttl);
+uint64_t kv_clean_expired(KVStore *kv);
 // void kv_clear_entry(KVStore *kv, Entry *e);
 // void kv_set_ttl(KVStore *kv, Entry *e, int64_t ttl);
 // int32_t next_timer_ms(KVStore *kv);

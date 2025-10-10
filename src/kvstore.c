@@ -24,9 +24,10 @@
 #include "zset.h"
 
 #define MAX_MSG 32 << 20
+#define TIMEOUT 5000
+#define TIMEOUT_S 5.0
 
 static atomic_u64 g_nonce_cnt = 0;
-#define NOEXPIRE ((CSKey) {-1, 0})
 
 struct Work {
     cnode node;
@@ -91,6 +92,13 @@ static cnode *kv_wrk_cb(cnode *wn) {
     return &r->node;
 }
 
+static void kv_expire_cb(EV_P_ ev_timer *w, const int revents) {
+    KVStore *kv = w->data;
+    uint64_t next_expire = kv_clean_expired(kv);
+    ev_timer_set(w, next_expire >= TIMEOUT ? TIMEOUT_S : (double) next_expire / 1000.0, 0.);
+    ev_timer_start(EV_A_ w);
+}
+
 static HNode *upsert_create(HNode *key) {
     assert(key);
     Entry *ent = calloc(1, sizeof(Entry));
@@ -98,6 +106,7 @@ static HNode *upsert_create(HNode *key) {
     spin_rw_init(&ent->lock);
     vstr_cpy(&ent->key, kent->key);
     ent->node.hcode = kent->node.hcode;
+    ent->expire_ms = NOEXPIRE;
 
     return &ent->node;
 }
@@ -136,12 +145,14 @@ KVStore *kv_new(KVStore *kv) {
     }
     chm_new(&kv->store);
     pool_init(&kv->pool, kv_res_cb);
+    csl_new(&kv->expire);
     return kv;
 }
 void kv_clear(KVStore *kv) {
     // TODO: Purge all nodes & Send to GC
     pool_destroy(&kv->pool);
     chm_clear(&kv->store);
+    csl_destroy(&kv->expire);
     if (kv->is_alloc) {
         free(kv);
     }
@@ -160,16 +171,23 @@ void kv_dispatch(KVStore *kv, Conn *c, OwnedRequest *req) {
     pool_post(pool, &w->node);
 }
 
-void kv_start(KVStore *kv) { pool_start(&kv->pool, kv_wrk_cb); }
+void kv_start(KVStore *kv) {
+    struct ev_loop *loop = ev_default_loop(0);
+    pool_start(&kv->pool, kv_wrk_cb);
+    ev_timer_init(&kv->expire_w, kv_expire_cb, TIMEOUT_S, 0.);
+    kv->expire_w.data = kv;
+    ev_timer_start(loop, &kv->expire_w);
+}
 void kv_stop(KVStore *kv) {
     logger(stderr, "INFO", "[master] Send stop signal...\n");
+    struct ev_loop *loop = ev_default_loop(0);
+    ev_timer_stop(loop, &kv->expire_w);
     cq_put(kv->pool.result_q, (cnode *) STOP_MAGIC);
     ev_async_send(EV_DEFAULT, &kv->pool.rev);
 }
 
 void kv_set_ttl(KVStore *kv, Entry *ent, int64_t ttl) {
     spin_rw_wlock(&ent->lock);
-    // if (ent->expire_ms != (uint64_t) -1) {
     if (cskey_cmp(ent->expire_ms, NOEXPIRE)) {
         csl_remove(&kv->expire, ent->expire_ms);
     }
@@ -184,34 +202,46 @@ void kv_set_ttl(KVStore *kv, Entry *ent, int64_t ttl) {
 }
 
 // Returns the min not-expired key
-CSKey kv_clean_expired(KVStore *kv) {
+uint64_t kv_clean_expired(KVStore *kv) {
     // No need to lock as we don't read the content of ent
     CSKey now = {get_clock_ms(), UINT64_MAX};
     CSKey expire_ms = csl_find_min_key(&kv->expire);
-    // while (now >= expire_ms) {
+    // now >= expire_ms
     while (cskey_cmp(now, expire_ms) >= 0) {
-        Entry *ent = csl_pop_min(&kv->expire);
+        Entry *ent = csl_remove(&kv->expire, expire_ms);
         if (ent) {
             spin_rw_rlock(&ent->lock);
-            // if (ent->expire_ms > now) {
-            if (cskey_cmp(ent->expire_ms, now) > 0) {
-                csl_update(&kv->expire, ent->expire_ms, ent);
-                expire_ms = ent->expire_ms;
-            } else {
-                HNode *res = chm_delete(&kv->store, &ent->node, entry_eq);
-                if (res) {
-                    qsbr_alloc_cb(g_qsbr_gc, entry_destroy, ent);
-                }
-                expire_ms = csl_find_min_key(&kv->expire);
+            HNode *res = chm_delete(&kv->store, &ent->node, entry_eq);
+            if (res) {
+                // Only throw it into GC when we actually removed the entry from store.
+                // Otherwise we get double free.
+                qsbr_alloc_cb(g_qsbr_gc, entry_destroy, ent);
             }
             spin_rw_runlock(&ent->lock);
-        } else {
-            expire_ms = csl_find_min_key(&kv->expire);
         }
+        expire_ms = csl_find_min_key(&kv->expire);
+        // Entry *ent = csl_pop_min(&kv->expire);
+        // if (ent) {
+        //     spin_rw_rlock(&ent->lock);
+        //     // if (ent->expire_ms > now) {
+        //     if (cskey_cmp(ent->expire_ms, now) > 0) {
+        //         csl_update(&kv->expire, ent->expire_ms, ent);
+        //         expire_ms = ent->expire_ms;
+        //     } else {
+        //         HNode *res = chm_delete(&kv->store, &ent->node, entry_eq);
+        //         if (res) {
+        //             qsbr_alloc_cb(g_qsbr_gc, entry_destroy, ent);
+        //         }
+        //         expire_ms = csl_find_min_key(&kv->expire);
+        //     }
+        //     spin_rw_runlock(&ent->lock);
+        // } else {
+        //     expire_ms = csl_find_min_key(&kv->expire);
+        // }
         now.key = get_clock_ms();
     }
 
-    return expire_ms;
+    return expire_ms.key - now.key;
 }
 
 // get key
@@ -431,6 +461,42 @@ void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *
     rb_destroy(&buf);
 }
 
+void do_pttl(KVStore *kv, RingBuf *out, vstr *kstr) {
+    Entry key = {
+            .key = kstr,
+            .node.hcode = vstr_hash_rapid(kstr),
+    };
+    HNode *node = chm_lookup(&kv->store, &key.node, entry_eq);
+    if (!node) {
+        out_int(out, -2);
+        return;
+    }
+
+    const Entry *ent = container_of(node, Entry, node);
+    if (!cskey_cmp(ent->expire_ms, NOEXPIRE)) {
+        out_int(out, -1);
+        return;
+    }
+
+    const uint64_t expire_at = ent->expire_ms.key;
+    const uint64_t now = get_clock_ms();
+    return out_int(out, expire_at > now ? (int64_t) (expire_at - now) : 0);
+}
+
+// pexpire key ttl
+void do_pexpire(KVStore *kv, RingBuf *out, vstr *kstr, int64_t ttl) {
+    Entry key = {
+            .key = kstr,
+            .node.hcode = vstr_hash_rapid(kstr),
+    };
+    HNode *node = chm_lookup(&kv->store, &key.node, entry_eq);
+    if (node) {
+        Entry *ent = container_of(node, Entry, node);
+        kv_set_ttl(kv, ent, ttl);
+    }
+    out_int(out, node ? 1 : 0);
+}
+
 void do_owned_req(KVStore *kv, OwnedRequest *oreq, RingBuf *out) {
     switch (oreq->req.type) {
         case CMD_GET:
@@ -451,8 +517,9 @@ void do_owned_req(KVStore *kv, OwnedRequest *oreq, RingBuf *out) {
             return do_zquery(kv, out, oreq->req.key, oreq->req.args.zquery_arg.score, oreq->req.args.zquery_arg.name,
                              oreq->req.args.zquery_arg.offset, oreq->req.args.zquery_arg.limit);
         case CMD_PTTL:
+            return do_pttl(kv, out, oreq->req.key);
         case CMD_PEXPIRE:
-            return out_err(out, ERR_UNKNOWN, "command not implemented");
+            return do_pexpire(kv, out, oreq->req.key, oreq->req.args.ttl);
         case CMD_BAD:
             return out_err(out, ERR_BAD_ARG, oreq->req.args.err);
         case CMD_UNKNOWN:
