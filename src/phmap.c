@@ -39,7 +39,7 @@ static bool has_collision(PHTable *t, uint64_t h, uint64_t idx) {
     uint64_t version1 = GET_VER(vs1), version2;
     uint32_t state1 = vs1 & STATE_MASK, state2;
 
-    if (state1 >= B_VISIBLE && buc->hcode == h) {
+    if (state1 >= B_VISIBLE && (buc->hcode & t->mask) == h) {
         vs2 = LOAD(&buc->vs, ACQUIRE);
         version2 = GET_VER(vs2);
         state2 = vs2 & STATE_MASK;
@@ -210,10 +210,10 @@ BNode *pht_erase(PHTable *t, BNode *k, bool (*eq)(BNode *, BNode *)) {
             uint64_t expect = VPACK(version, B_MEMBER);
             if (CMPXCHG(&buc->vs, &expect, VPACK(version, B_BUSY), ACQ_REL, RELAXED)) {
                 cond_lower_bound(t, h, i);
+                BNode *res = XCHG(&buc->node, NULL, RELEASE);
                 STORE(&buc->vs, VPACK(version + 1, B_EMPTY), RELEASE);
-                STORE(&buc->node, NULL, RELEASE);
                 FAS(&t->size, 1, RELAXED);
-                return node;
+                return res;
             }
         }
     }

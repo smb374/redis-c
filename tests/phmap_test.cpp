@@ -160,7 +160,7 @@ TEST_F(PHMapTest, MultiThreadMixedReadWriteDelete) {
 
 TEST_F(PHMapTest, MultiThreadInsertThenErase) {
     const int num_threads = 8;
-    const int keys_per_thread = 1000;
+    const int keys_per_thread = 5000;
     std::vector<std::thread> threads;
 
     for (int i = 0; i < num_threads; ++i) {
@@ -179,7 +179,6 @@ TEST_F(PHMapTest, MultiThreadInsertThenErase) {
             }
 
             qsbr_quiescent(g_qsbr_gc, tid);
-            // usleep(1000);
 
             // Phase 2: Erase
             for (auto *entry: inserted_nodes) {
