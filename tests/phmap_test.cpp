@@ -33,7 +33,8 @@ static bool test_entry_eq(BNode *lhs, BNode *rhs) {
 class PHMapTest : public ::testing::Test {
 protected:
     PHTable *map = nullptr;
-    static const size_t MAP_SIZE = 65536; // Must be a power of 2
+    // static const size_t MAP_SIZE = 65536; // Must be a power of 2
+    static const size_t MAP_SIZE = 1048576; // Must be a power of 2
 
     void SetUp() override {
         g_qsbr_gc = qsbr_init(nullptr, 65536);
@@ -78,7 +79,7 @@ TEST_F(PHMapTest, SingleThreadInsertLookupErase) {
 
 TEST_F(PHMapTest, MultiThreadAllNodesPresent) {
     const int num_threads = 8;
-    const int keys_per_thread = 5000;
+    const int keys_per_thread = 10000;
     std::vector<std::thread> threads;
 
     for (int i = 0; i < num_threads; ++i) {
@@ -110,7 +111,7 @@ TEST_F(PHMapTest, MultiThreadAllNodesPresent) {
 }
 
 TEST_F(PHMapTest, MultiThreadMixedReadWriteDelete) {
-    const int num_threads = 4;
+    const int num_threads = 8;
     const int ops_per_thread = 20000;
     const int key_space = 500;
     std::vector<std::thread> threads;
@@ -160,7 +161,7 @@ TEST_F(PHMapTest, MultiThreadMixedReadWriteDelete) {
 
 TEST_F(PHMapTest, MultiThreadInsertThenErase) {
     const int num_threads = 8;
-    const int keys_per_thread = 5000;
+    const int keys_per_thread = 10000;
     std::vector<std::thread> threads;
 
     for (int i = 0; i < num_threads; ++i) {

@@ -71,7 +71,7 @@ static void cond_lower_bound(PHTable *t, uint64_t h, uint64_t idx) {
         }
     }
 }
-static bool assist(PHTable *t, BNode *k, uint64_t h, uint64_t i, uint64_t ver_i, bool (*eq)(BNode *, BNode *)) {
+static bool assist(PHTable *t, BNode *k, uint64_t h, uint64_t i, uint64_t ver_i, node_eq eq) {
     Bucket *buc_i = bucket(t, h, i);
     uint64_t max = get_probe_bound(t, h);
     for (int j = 0; j <= max; j++) {
@@ -142,7 +142,7 @@ void pht_destroy(PHTable *t) {
     }
 }
 
-BNode *pht_lookup(PHTable *t, BNode *k, bool (*eq)(BNode *, BNode *)) {
+BNode *pht_lookup(PHTable *t, BNode *k, node_eq eq) {
     uint64_t h = k->hcode & t->mask, max = get_probe_bound(t, h);
     for (int i = 0; i <= max; i++) {
         Bucket *buc = bucket(t, h, i);
@@ -161,7 +161,7 @@ BNode *pht_lookup(PHTable *t, BNode *k, bool (*eq)(BNode *, BNode *)) {
     return NULL;
 }
 
-bool pht_insert(PHTable *t, BNode *n, bool (*eq)(BNode *, BNode *)) {
+bool pht_insert(PHTable *t, BNode *n, node_eq eq) {
     uint64_t h = n->hcode & t->mask, i = 0;
     uint64_t version;
     for (i = 0; i <= t->mask; i++) {
@@ -198,7 +198,7 @@ bool pht_insert(PHTable *t, BNode *n, bool (*eq)(BNode *, BNode *)) {
     }
 }
 
-BNode *pht_erase(PHTable *t, BNode *k, bool (*eq)(BNode *, BNode *)) {
+BNode *pht_erase(PHTable *t, BNode *k, node_eq eq) {
     uint64_t h = k->hcode & t->mask, max = get_probe_bound(t, h);
     for (uint64_t i = 0; i <= max; i++) {
         Bucket *buc = bucket(t, h, i);

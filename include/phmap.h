@@ -18,7 +18,6 @@ enum BucketState {
     B_VISIBLE = 0b011,
     B_INSERTING = 0b100,
     B_MEMBER = 0b101,
-    B_MOVED = 0b111,
 };
 
 struct BNode {
@@ -31,6 +30,8 @@ struct PHTable;
 typedef struct PHTable PHTable;
 struct PHMap;
 typedef struct PHMap PHMap;
+
+typedef bool (*node_eq)(BNode *, BNode *);
 
 #ifndef __cplusplus
 #include <stdatomic.h>
@@ -50,17 +51,12 @@ struct PHTable {
     atomic_size_t size;
     bool is_alloc;
 };
-
-struct PHMap {
-    _Atomic(PHTable *) older, newer;
-    bool is_alloc;
-};
 #endif
 
 PHTable *pht_new(PHTable *t, size_t len);
 void pht_destroy(PHTable *t);
-BNode *pht_lookup(PHTable *t, BNode *k, bool (*eq)(BNode *, BNode *));
-bool pht_insert(PHTable *t, BNode *n, bool (*eq)(BNode *, BNode *));
-BNode *pht_erase(PHTable *t, BNode *k, bool (*eq)(BNode *, BNode *));
+BNode *pht_lookup(PHTable *t, BNode *k, node_eq eq);
+bool pht_insert(PHTable *t, BNode *n, node_eq eq);
+BNode *pht_erase(PHTable *t, BNode *k, node_eq eq);
 
 #endif /* ifndef PHMAP_H */
