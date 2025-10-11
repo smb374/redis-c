@@ -8,6 +8,7 @@
 
 #define BOUND_MASK 0xfffffffffffffffe
 #define VERSION_MASK 0xfffffffffffffff8
+#define STATE_MASK 0x7
 #define INIT_PHT_SIZE 256
 
 enum BucketState {
@@ -17,6 +18,7 @@ enum BucketState {
     B_VISIBLE = 0b011,
     B_INSERTING = 0b100,
     B_MEMBER = 0b101,
+    B_MOVED = 0b111,
 };
 
 struct BNode {
@@ -31,6 +33,8 @@ struct PHMap;
 typedef struct PHMap PHMap;
 
 #ifndef __cplusplus
+#include <stdatomic.h>
+
 struct Bucket {
     // [61-bit version|3-bit state]
     atomic_u64 vs;
@@ -43,6 +47,7 @@ struct PHTable {
     atomic_u64 *bounds;
     Bucket *buckets;
     size_t mask;
+    atomic_size_t size;
     bool is_alloc;
 };
 

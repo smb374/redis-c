@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <random>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 extern "C" {
@@ -158,8 +159,8 @@ TEST_F(PHMapTest, MultiThreadMixedReadWriteDelete) {
 }
 
 TEST_F(PHMapTest, MultiThreadInsertThenErase) {
-    const int num_threads = 4;
-    const int keys_per_thread = 100;
+    const int num_threads = 8;
+    const int keys_per_thread = 1000;
     std::vector<std::thread> threads;
 
     for (int i = 0; i < num_threads; ++i) {
@@ -178,12 +179,13 @@ TEST_F(PHMapTest, MultiThreadInsertThenErase) {
             }
 
             qsbr_quiescent(g_qsbr_gc, tid);
+            // usleep(1000);
 
             // Phase 2: Erase
             for (auto *entry: inserted_nodes) {
                 TestEntry query{{entry->node.hcode}, entry->key, 0};
                 BNode *deleted = pht_erase(map, &query.node, test_entry_eq);
-                ASSERT_EQ(deleted, &entry->node);
+                EXPECT_EQ(deleted, &entry->node);
                 if (deleted) {
                     qsbr_alloc_cb(
                             g_qsbr_gc, [](void *p) { delete container_of((BNode *) p, TestEntry, node); }, deleted);
