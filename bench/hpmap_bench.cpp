@@ -80,10 +80,11 @@ BENCHMARK_DEFINE_F(HPMapFixture, BM_Insert)(benchmark::State &state) {
     for (auto _: state) {
         uint64_t key = base_key + local_key++;
         auto *entry = new TestEntry{{int_hash_rapid(key)}, key, key * 2};
-        bool success = hpm_add(g_hpmap, &entry->node, test_entry_eq);
-        if (!success)
-            delete entry;
-        benchmark::DoNotOptimize(success);
+        BNode *result = hpm_upsert(g_hpmap, &entry->node, test_entry_eq);
+        if (result != &entry->node) {
+            delete entry; // Node was not inserted
+        }
+        benchmark::DoNotOptimize(result);
     }
     state.SetItemsProcessed(state.iterations());
 }
@@ -147,10 +148,11 @@ BENCHMARK_DEFINE_F(HPMapFixture, BM_Mixed_80Read_20Write)(benchmark::State &stat
         } else {
             uint64_t key = base_key + local_key++;
             auto *entry = new TestEntry{{int_hash_rapid(key)}, key, key * 2};
-            bool success = hpm_add(g_hpmap, &entry->node, test_entry_eq);
-            if (!success)
-                delete entry;
-            benchmark::DoNotOptimize(success);
+            BNode *result = hpm_upsert(g_hpmap, &entry->node, test_entry_eq);
+            if (result != &entry->node) {
+                delete entry; // Node was not inserted
+            }
+            benchmark::DoNotOptimize(result);
         }
     }
     state.SetItemsProcessed(state.iterations());
@@ -184,10 +186,11 @@ BENCHMARK_DEFINE_F(HPMapFixture, BM_Mixed_CRUD)(benchmark::State &state) {
         } else {
             uint64_t insert_key = base_key + local_key++;
             auto *entry = new TestEntry{{int_hash_rapid(insert_key)}, insert_key, insert_key * 2};
-            bool success = hpm_add(g_hpmap, &entry->node, test_entry_eq);
-            if (!success)
-                delete entry;
-            benchmark::DoNotOptimize(success);
+            BNode *result = hpm_upsert(g_hpmap, &entry->node, test_entry_eq);
+            if (result != &entry->node) {
+                delete entry; // Node was not inserted
+            }
+            benchmark::DoNotOptimize(result);
         }
     }
     state.SetItemsProcessed(state.iterations());
