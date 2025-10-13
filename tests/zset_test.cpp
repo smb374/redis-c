@@ -4,14 +4,12 @@
 #include "zset.h"
 #include "utils.h"
 
-#include <algorithm>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
 
 // --- Test Fixture ---
 
-qsbr *g_qsbr_gc = nullptr;
 class ZSetTest : public ::testing::Test {
 protected:
     ZSet zset;

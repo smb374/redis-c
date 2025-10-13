@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(redis-c)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
@@ -49,9 +51,8 @@ add_library(common_lib STATIC
         src/cqueue.c
         src/thread_pool.c
         src/qsbr.c
-        src/ebr.c
         src/cskiplist.c
-        src/phmap.c
+        src/hpmap.c
 )
 target_link_libraries(common_lib PUBLIC ev::ev)
 target_include_directories(common_lib PUBLIC
@@ -113,16 +114,6 @@ add_test(NAME cqueue_test COMMAND cqueue_test)
 add_executable(thread_pool_test tests/thread_pool_test.cpp)
 target_link_libraries(thread_pool_test PRIVATE common_lib gtest_main pthread)
 add_test(NAME thread_pool_test COMMAND thread_pool_test)
-## chashmap_test
-add_executable(chashmap_test tests/chashmap_test.cpp)
-target_link_libraries(chashmap_test PRIVATE common_lib gtest_main pthread atomic)
-# target_compile_options(chashmap_test PRIVATE -fsanitize=thread)
-# target_link_options(chashmap_test PRIVATE -fsanitize=thread)
-add_test(NAME chashmap_test COMMAND chashmap_test)
-## ebr_test
-add_executable(ebr_test tests/ebr_test.cpp)
-target_link_libraries(ebr_test PRIVATE common_lib gtest_main pthread atomic)
-add_test(NAME ebr_test COMMAND ebr_test)
 ## qsbr_test
 add_executable(qsbr_test tests/qsbr_test.cpp)
 target_link_libraries(qsbr_test PRIVATE common_lib gtest_main pthread)
@@ -131,10 +122,10 @@ add_test(NAME qsbr_test COMMAND qsbr_test)
 add_executable(cskiplist_test tests/cskiplist_test.cpp)
 target_link_libraries(cskiplist_test PRIVATE common_lib gtest_main pthread atomic)
 add_test(NAME cskiplist_test COMMAND cskiplist_test)
-## phmap_test
-add_executable(phmap_test tests/phmap_test.cpp)
-target_link_libraries(phmap_test PRIVATE common_lib gtest_main pthread atomic)
-add_test(NAME phmap_test COMMAND phmap_test)
+## hpmap_test
+add_executable(hpmap_test tests/hpmap_test.cpp)
+target_link_libraries(hpmap_test PRIVATE common_lib gtest_main pthread atomic)
+add_test(NAME hpmap_test COMMAND hpmap_test)
 
 set_tests_properties(
         ringbuf_test
@@ -147,16 +138,18 @@ set_tests_properties(
         kvstore_test
         cqueue_test
         thread_pool_test
-        chashmap_test
-        ebr_test
         qsbr_test
         cskiplist_test
-        phmap_test
+        hpmap_test
         PROPERTIES LABELS "Unit"
 )
 
-# Benchmarks
-## chashmap_bench
-add_executable(chashmap_bench bench/chashmap_bench.cpp)
-target_link_libraries(chashmap_bench PRIVATE common_lib benchmark::benchmark pthread)
+# # Benchmarks
+# ## chashmap_bench
+# add_executable(chashmap_bench bench/chashmap_bench.cpp)
+# target_link_libraries(chashmap_bench PRIVATE common_lib benchmark::benchmark pthread)
+
+## hpmap_bench
+add_executable(hpmap_bench bench/hpmap_bench.cpp)
+target_link_libraries(hpmap_bench PRIVATE common_lib benchmark::benchmark pthread)
 

@@ -16,15 +16,7 @@
 #include <threads.h>
 #include <time.h>
 
-uint32_t next_pow2m1(uint32_t x) {
-    x |= x >> 1;
-    x |= x >> 2;
-    x |= x >> 4;
-    x |= x >> 8;
-    x |= x >> 16;
-    return x;
-}
-uint32_t next_pow2(const uint32_t x) { return next_pow2m1(x - 1) + 1; }
+u64 next_pow2(const u64 x) { return x == 1 ? 1 : 1 << (64 - __builtin_clzll(x - 1)); }
 
 // FNV-hash 64-bit
 uint64_t int_hash_fnv(const uint64_t val) {

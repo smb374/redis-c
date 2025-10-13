@@ -11,6 +11,16 @@ extern "C" {
 #include <stdint.h>
 #include <stdio.h>
 
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+
 #define container_of(ptr, T, member) ((T *) ((char *) (ptr) - offsetof(T, member)))
 #define IS_POW_2(n) (((n) > 0) && (((n) & ((n) - 1)) == 0))
 struct vstr {
@@ -25,6 +35,8 @@ typedef struct spin_rwlock spin_rwlock;
 #ifndef __cplusplus
 #include <stdalign.h>
 #include <stdatomic.h>
+
+typedef _Atomic(uint64_t) atomic_u64;
 
 enum {
     RELAXED = memory_order_relaxed,
@@ -42,14 +54,16 @@ enum {
 #define XCHG(t, v, o) atomic_exchange_explicit((t), (v), (o))
 #define FAA(t, v, o) atomic_fetch_add_explicit((t), (v), (o))
 #define FAS(t, v, o) atomic_fetch_sub_explicit((t), (v), (o))
+#define FAAND(t, v, o) atomic_fetch_and_explicit((t), (v), (o))
+#define FAOR(t, v, o) atomic_fetch_or_explicit((t), (v), (o))
+#define FAXOR(t, v, o) atomic_fetch_xor_explicit((t), (v), (o))
 
-typedef _Atomic(uint64_t) atomic_u64;
 struct spin_rwlock {
     alignas(64) atomic_int ticket;
 };
 #endif
 
-uint32_t next_pow2(uint32_t x);
+u64 next_pow2(u64 x);
 uint64_t int_hash_fnv(uint64_t val);
 uint64_t bytes_hash_fnv(const uint8_t *bytes, size_t len);
 uint64_t vstr_hash_fnv(const vstr *v);

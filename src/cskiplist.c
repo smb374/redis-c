@@ -15,6 +15,10 @@
 #define TAG_MASK 0x7
 #define PTR_MASK ~TAG_MASK
 
+static bool is_marked(void *ptr) { return ((uintptr_t) ptr & TAG_MASK) != 0; }
+static void *tag_ptr(void *ptr, int tag) { return (void *) (((uintptr_t) ptr & PTR_MASK) | (tag & TAG_MASK)); }
+static void *untag_ptr(void *ptr) { return (void *) ((uintptr_t) ptr & PTR_MASK); }
+
 static bool seeded = false;
 // CSKIPLIST_MAX_LEVELS = 64
 static int32_t grand() {
@@ -22,10 +26,6 @@ static int32_t grand() {
     // s.t. the ffs can report 64 on 0x8000000000000000
     return __builtin_ffsll(~(random() & 0x7FFFFFFFFFFFFFFF));
 }
-
-static bool is_marked(void *ptr) { return ((uintptr_t) ptr & TAG_MASK) != 0; }
-static void *tag_ptr(void *ptr, int tag) { return (void *) (((uintptr_t) ptr & PTR_MASK) | (tag & TAG_MASK)); }
-static void *untag_ptr(void *ptr) { return (void *) ((uintptr_t) ptr & PTR_MASK); }
 
 int cskey_cmp(CSKey l, CSKey r) {
     return (l.key ^ r.key) ? (l.key > r.key) - (l.key < r.key) : (l.nonce > r.nonce) - (l.nonce < r.nonce);

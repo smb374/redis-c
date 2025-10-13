@@ -15,7 +15,7 @@ extern "C" {
 
 #include "connection.h"
 #include "cskiplist.h"
-#include "hashtable.h"
+#include "hpmap.h"
 #include "parse.h"
 #include "thread_pool.h"
 #include "utils.h"
@@ -43,7 +43,7 @@ typedef struct Entry Entry;
 
 #ifndef __cplusplus
 struct Entry {
-    HNode node;
+    BNode node;
     spin_rwlock lock;
 
     CSKey expire_ms;
@@ -55,7 +55,7 @@ struct Entry {
     } val;
 };
 struct KVStore {
-    CHMap store;
+    HPMap store;
     CSList expire;
     ThreadPool pool;
     ev_timer expire_w;
@@ -63,7 +63,7 @@ struct KVStore {
 };
 #endif
 
-bool entry_eq(HNode *ln, HNode *rn);
+bool entry_eq(BNode *ln, BNode *rn);
 
 KVStore *kv_new(KVStore *kv);
 void kv_clear(KVStore *kv);

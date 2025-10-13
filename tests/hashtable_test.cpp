@@ -10,8 +10,6 @@
 #include "utils.h"
 
 #define PARTIAL_REHASH_TRIGGER 65536
-
-qsbr *g_qsbr_gc = nullptr;
 // --- Test Setup ---
 
 // A simple struct that embeds the hnode_t for testing purposes.
