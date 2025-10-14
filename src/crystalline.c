@@ -3,29 +3,45 @@
 #include <assert.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "utils.h"
 
-#define RETIRE_FREQ 120
-#define ALLOC_FREQ 1
-const uint64_t REFC_PROTECT = 1UL << 63;
-void *const INVPTR = (void *) -1;
+struct Node;
+typedef struct Node Node;
+struct Reservation;
+typedef struct Reservation Reservation;
+struct Batch;
+typedef struct Batch Batch;
 
+struct Node {
+    union {
+        atomic_u64 refc;
+        Node *bnext;
+    };
+    union {
+        atomic_u64 birth;
+        struct Reservation *slot;
+        _Atomic(Node *) next;
+    };
+    Node *blink;
+};
 struct Reservation {
     _Atomic(Node *) list;
-    atomic_u64 era;
+    atomic_u64 epoch;
 };
 struct Batch {
     Node *first;
     Node *refs;
     int counter;
 };
-typedef struct Reservation Reservation;
-typedef struct Batch Batch;
+
+#define IS_RNODE(x) ((uintptr_t) (x) & 0x1)
+#define RNODE(x) ((Node *) ((uintptr_t) (x) ^ 0x1))
 
 static Reservation rsrv[MAX_THREADS][MAX_IDX];
-static atomic_u64 global_era = 1;
+static atomic_u64 global_epoch = 1;
 static atomic_int next_tid = 0;
 
 static _Thread_local int TID = -1;
@@ -35,7 +51,7 @@ static _Thread_local int alloc_cnt = 0;
 static void free_batch(Node *refs);
 static void traverse(Node *next);
 static void try_retire(void);
-static u64 update_era(u64 curr_era, int index);
+static u64 update_epoch(u64 curr_epoch, int index);
 static Node *ptr_to_node(void *ptr);
 static void *node_to_ptr(Node *node);
 
@@ -52,10 +68,10 @@ static inline void *node_to_ptr(Node *node) {
 }
 
 void gc_init(void) {
-    for (int i = 0; i < MAX_THREADS; ++i) {
-        for (int j = 0; j < MAX_IDX; ++j) {
+    for (int i = 0; i < MAX_THREADS; i++) {
+        for (int j = 0; j < MAX_IDX; j++) {
             STORE(&rsrv[i][j].list, INVPTR, RELAXED);
-            STORE(&rsrv[i][j].era, 0, RELAXED);
+            STORE(&rsrv[i][j].epoch, 0, RELAXED);
         }
     }
 }
@@ -63,7 +79,7 @@ void gc_init(void) {
 void gc_reg(void) {
     if (TID == -1) {
         TID = FAA(&next_tid, 1, RELAXED);
-        assert(TID < MAX_THREADS && "Exceeded MAX_THREADS");
+        assert(TID < MAX_THREADS && "Too many threads");
     }
 }
 
@@ -74,32 +90,36 @@ void gc_unreg(void) {
 
 void *gc_alloc(size_t size) {
     assert(TID != -1 && "Thread not registered");
-    if (!(alloc_cnt++ % ALLOC_FREQ)) {
-        FAA(&global_era, 1, RELAXED);
+    if ((alloc_cnt++ % ALLOC_FREQ) == 0) {
+        FAA(&global_epoch, 1, ACQ_REL);
     }
     Node *node = calloc(1, sizeof(Node) + size);
     if (!node)
         return NULL;
 
-    node->birth = LOAD(&global_era, RELAXED);
+    node->birth = LOAD(&global_epoch, ACQUIRE);
+    node->blink = NULL;
+
     return node_to_ptr(node);
 }
 
 void *gc_calloc(size_t nmemb, size_t size) {
     assert(TID != -1 && "Thread not registered");
     if ((alloc_cnt++ % ALLOC_FREQ) == 0) {
-        FAA(&global_era, 1, RELAXED);
+        FAA(&global_epoch, 1, ACQ_REL);
     }
     Node *node = calloc(1, sizeof(Node) + nmemb * size);
     if (!node)
         return NULL;
 
-    node->birth = LOAD(&global_era, RELAXED);
+    node->birth = LOAD(&global_epoch, ACQUIRE);
+    node->blink = NULL;
+
     return node_to_ptr(node);
 }
 
 static void free_batch(Node *refs) {
-    Node *n = refs->blink; // First SLOT node
+    Node *n = refs->blink;
     do {
         Node *obj = n;
         n = n->bnext;
@@ -122,21 +142,20 @@ static void try_retire(void) {
     u64 min_birth = batch.refs->birth;
     Node *last = batch.first;
 
-    // Phase 1: Check reservations and see if we have enough nodes in the batch.
-    for (int i = 0; i < MAX_THREADS; ++i) {
-        for (int j = 0; j < MAX_IDX; ++j) {
-            if (LOAD(&rsrv[i][j].list, ACQUIRE) == INVPTR)
+    for (int i = 0; i < MAX_THREADS; i++) {
+        for (int j = 0; j < MAX_IDX; j++) {
+            Reservation *r = &rsrv[i][j];
+            if (LOAD(&r->list, ACQUIRE) == INVPTR)
                 continue;
-            if (LOAD(&rsrv[i][j].era, ACQUIRE) < min_birth)
+            if (LOAD(&r->epoch, ACQUIRE) < min_birth)
                 continue;
             if (last == batch.refs)
-                return; // Ran out of nodes, must abort and wait for more.
-            last->slot = &rsrv[i][j];
+                return;
+            last->slot = r;
             last = last->bnext;
         }
     }
 
-    // Phase 2: Attach nodes to the collected reservation lists.
     Node *curr = batch.first;
     i64 cnt = -REFC_PROTECT;
 
@@ -159,8 +178,9 @@ static void try_retire(void) {
                 }
             }
         }
+        cnt++;
     }
-    if (FAA(&batch.refs->refc, cnt, ACQ_REL) + cnt == 0) {
+    if (FAA(&batch.refs->refc, cnt, ACQ_REL) == (u64) (-cnt)) {
         free_batch(batch.refs);
     }
     batch.first = NULL;
@@ -169,14 +189,17 @@ static void try_retire(void) {
 
 void gc_retire(void *ptr) {
     assert(TID != -1 && "Thread not registered");
+    if (!ptr)
+        return;
+
     Node *node = ptr_to_node(ptr);
 
-    if (!batch.refs) { // This is the first node, it becomes the REFS node.
+    if (!batch.first) {
         batch.refs = node;
         STORE(&node->refc, REFC_PROTECT, RELAXED);
-    } else { // This is a SLOT node.
+    } else {
         if (batch.refs->birth > node->birth) {
-            batch.refs->birth = node->birth; // Update batch's minimum birth era.
+            batch.refs->birth = node->birth;
         }
         node->blink = batch.refs;
         node->bnext = batch.first;
@@ -184,43 +207,47 @@ void gc_retire(void *ptr) {
     batch.first = node;
 
     if ((batch.counter++ % RETIRE_FREQ) == 0) {
-        batch.refs->blink = batch.first; // The REFS node points to the latest SLOT node.
+        batch.refs->blink = batch.first;
         try_retire();
     }
 }
 
-static u64 update_era(u64 curr_era, int index) {
-    if (LOAD(&rsrv[TID][index].list, ACQUIRE)) {
-        Node *list = XCHG(&rsrv[TID][index].list, NULL, ACQ_REL);
+static u64 update_epoch(u64 curr_epoch, int index) {
+    Reservation *r = &rsrv[TID][index];
+
+    Node *list = LOAD(&r->list, ACQUIRE);
+    if (list) {
+        list = XCHG(&r->list, NULL, ACQ_REL);
         if (list != INVPTR) {
             traverse(list);
         }
-        curr_era = LOAD(&global_era, ACQUIRE);
+        curr_epoch = LOAD(&global_epoch, ACQUIRE);
     }
-    // Set the new era for this protection slot.
-    STORE(&rsrv[TID][index].era, curr_era, RELEASE);
-    return curr_era;
+    STORE(&r->epoch, curr_epoch, RELEASE);
+    return curr_epoch;
 }
 
-void *gc_protect(void **obj, int index) {
+void *gc_protect(void *obj, int index) {
     assert(TID != -1 && "Thread not registered");
     assert(index < MAX_IDX && "Protection index out of bounds");
+    Reservation *r = &rsrv[TID][index];
 
-    u64 prev_era = LOAD(&rsrv[TID][index].era, ACQUIRE);
+    u64 prev_epoch = LOAD(&r->epoch, ACQUIRE);
     for (;;) {
-        void *ptr = *obj;
-        u64 curr_era = LOAD(&global_era, ACQUIRE);
-        if (prev_era == curr_era) {
-            return ptr; // Fast path: Era hasn't changed, protection is valid.
-        }
-        prev_era = update_era(curr_era, index); // Slow path: Update era and retry.
+        _Atomic(void *) *src = obj;
+        void *ptr = LOAD(src, ACQUIRE);
+        u64 curr_epoch = LOAD(&global_epoch, ACQUIRE);
+        if (prev_epoch == curr_epoch)
+            return ptr;
+        prev_epoch = update_epoch(curr_epoch, index);
     }
 }
 
 void gc_clear(void) {
     assert(TID != -1 && "Thread not registered");
-    for (int i = 0; i < MAX_IDX; ++i) {
-        Node *p = XCHG(&rsrv[TID][i].list, INVPTR, ACQ_REL);
+    for (int i = 0; i < MAX_IDX; i++) {
+        Reservation *r = &rsrv[TID][i];
+        Node *p = XCHG(&r->list, INVPTR, ACQ_REL);
         if (p != INVPTR) {
             traverse(p);
         }

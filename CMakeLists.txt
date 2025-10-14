@@ -55,6 +55,7 @@ add_library(common_lib STATIC
         src/hpmap.c
         src/crystalline.c
 )
+# include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(common_lib PUBLIC ev::ev)
 target_include_directories(common_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -127,6 +128,10 @@ add_test(NAME cskiplist_test COMMAND cskiplist_test)
 add_executable(hpmap_test tests/hpmap_test.cpp)
 target_link_libraries(hpmap_test PRIVATE common_lib gtest_main pthread atomic)
 add_test(NAME hpmap_test COMMAND hpmap_test)
+## crystalline_test
+add_executable(crystalline_test tests/crystalline_test.cpp)
+target_link_libraries(crystalline_test PRIVATE common_lib gtest gtest_main pthread)
+add_test(NAME crystalline_test COMMAND crystalline_test)
 
 set_tests_properties(
         ringbuf_test
@@ -142,6 +147,7 @@ set_tests_properties(
         qsbr_test
         cskiplist_test
         hpmap_test
+        crystalline_test
         PROPERTIES LABELS "Unit"
 )
 

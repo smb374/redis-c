@@ -1,31 +1,25 @@
 #ifndef CRYSTALLINE_H
 #define CRYSTALLINE_H
 
-#include "utils.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif /* ifndef __cplusplus */
+
+#include <stddef.h>
 
 #ifndef MAX_THREADS
 #define MAX_THREADS 16
 #endif
 
 #ifndef MAX_IDX
-#define MAX_IDX 8
+#define MAX_IDX 12
 #endif
 
-struct Reservation;
-
-struct Node {
-    union {
-        atomic_u64 refc;
-        struct Node *bnext;
-    };
-    union {
-        u64 birth;
-        struct Reservation *slot;
-        _Atomic(struct Node *) next;
-    };
-    struct Node *blink;
-};
-typedef struct Node Node;
+#define RETIRE_FREQ 128
+#define ALLOC_FREQ 32
+#define REFC_PROTECT (1UL << 63)
+#define INVPTR ((void *) -1LL)
 
 void gc_init(void);
 void gc_reg(void);
@@ -33,7 +27,11 @@ void gc_unreg(void);
 void *gc_alloc(size_t size);
 void *gc_calloc(size_t nmemb, size_t size);
 void gc_retire(void *ptr);
-void *gc_protect(void **obj, int index);
+// NOTE: pass in a _Atomic(void*)* as obj
+void *gc_protect(void *obj, int index);
 void gc_clear(void);
 
+#ifdef __cplusplus
+}
+#endif /* ifndef __cplusplus */
 #endif /* ifndef CRYSTALLINE_H */
