@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 
 #include "utils.h"
 
@@ -37,12 +38,9 @@ struct Batch {
     int counter;
 };
 
-#define IS_RNODE(x) ((uintptr_t) (x) & 0x1)
-#define RNODE(x) ((Node *) ((uintptr_t) (x) ^ 0x1))
-
 static Reservation rsrv[MAX_THREADS][MAX_IDX];
 static atomic_u64 global_epoch = 1;
-static atomic_int next_tid = 0;
+static atomic_u64 active = 0;
 
 static _Thread_local int TID = -1;
 static _Thread_local Batch batch = {.first = NULL, .refs = NULL, .counter = 0};
@@ -78,13 +76,19 @@ void gc_init(void) {
 
 void gc_reg(void) {
     if (TID == -1) {
-        TID = FAA(&next_tid, 1, RELAXED);
-        assert(TID < MAX_THREADS && "Too many threads");
+        u64 lactive = LOAD(&active, ACQUIRE);
+        int slot;
+        do {
+            slot = ffsll(~lactive) - 1;
+            assert(slot != -1 && "Too many threads");
+        } while (!CMPXCHG(&active, &lactive, lactive | (1ULL << slot), RELEASE, ACQUIRE));
+        TID = slot;
     }
 }
 
 void gc_unreg(void) {
     gc_clear();
+    FAAND(&active, ~(1ULL << TID), ACQ_REL);
     TID = -1;
 }
 
@@ -227,15 +231,14 @@ static u64 update_epoch(u64 curr_epoch, int index) {
     return curr_epoch;
 }
 
-void *gc_protect(void *obj, int index) {
+void *gc_protect(void **obj, int index) {
     assert(TID != -1 && "Thread not registered");
     assert(index < MAX_IDX && "Protection index out of bounds");
     Reservation *r = &rsrv[TID][index];
 
     u64 prev_epoch = LOAD(&r->epoch, ACQUIRE);
     for (;;) {
-        _Atomic(void *) *src = obj;
-        void *ptr = LOAD(src, ACQUIRE);
+        void *ptr = *obj;
         u64 curr_epoch = LOAD(&global_epoch, ACQUIRE);
         if (prev_epoch == curr_epoch)
             return ptr;

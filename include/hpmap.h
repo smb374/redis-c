@@ -47,16 +47,16 @@ struct Bucket {
 };
 
 struct HPTable {
-    _Atomic(struct HPTable *) next;
-    struct Segment *segments;
-    struct Bucket *buckets;
+    _Atomic(struct HPTable *) next; // GC
+    struct Segment *segments; // GC
+    struct Bucket *buckets; // GC
     u64 mask, nsegs;
     atomic_u64 size;
     bool is_alloc;
 };
 
 struct HPMap {
-    _Atomic(struct HPTable *) active;
+    _Atomic(struct HPTable *) active; // GC
     atomic_u64 migrate_pos, mthreads, size;
     atomic_bool migration_started;
     pthread_mutex_t mlock;

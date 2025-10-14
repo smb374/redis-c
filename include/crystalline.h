@@ -9,7 +9,7 @@ extern "C" {
 #include <stddef.h>
 
 #ifndef MAX_THREADS
-#define MAX_THREADS 16
+#define MAX_THREADS 64
 #endif
 
 #ifndef MAX_IDX
@@ -27,8 +27,7 @@ void gc_unreg(void);
 void *gc_alloc(size_t size);
 void *gc_calloc(size_t nmemb, size_t size);
 void gc_retire(void *ptr);
-// NOTE: pass in a _Atomic(void*)* as obj
-void *gc_protect(void *obj, int index);
+void *gc_protect(void **obj, int index);
 void gc_clear(void);
 
 #ifdef __cplusplus

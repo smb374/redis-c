@@ -3,10 +3,9 @@
 #include <thread>
 #include <vector>
 
-extern "C" {
 #include "hpmap.h"
 #include "utils.h"
-}
+
 
 // --- Test Entry Structure ---
 struct TestEntry {

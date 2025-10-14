@@ -49,7 +49,7 @@ int pop() {
         // CRITICAL: Protect the head pointer before we dereference it.
         // gc_protect ensures that even if another thread pops this node and retires it,
         // the memory will not be freed while we hold this protection.
-        head = (StackNode *) gc_protect((void *) &g_stack_head, protect_idx);
+        head = (StackNode *) gc_protect((void **) &g_stack_head, protect_idx);
 
         if (head == nullptr) {
             return -1; // Stack is empty
