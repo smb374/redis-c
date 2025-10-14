@@ -53,6 +53,7 @@ add_library(common_lib STATIC
         src/qsbr.c
         src/cskiplist.c
         src/hpmap.c
+        src/crystalline.c
 )
 target_link_libraries(common_lib PUBLIC ev::ev)
 target_include_directories(common_lib PUBLIC
