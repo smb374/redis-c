@@ -10,7 +10,7 @@
 #define RETIRE_FREQ 120
 #define ALLOC_FREQ 1
 const uint64_t REFC_PROTECT = 1UL << 63;
-void *const INVPTR = (void *) 1;
+void *const INVPTR = (void *) -1;
 
 struct Reservation {
     _Atomic(Node *) list;
@@ -110,7 +110,7 @@ static void free_batch(Node *refs) {
 static void traverse(Node *next) {
     while (next && next != INVPTR) {
         Node *curr = next;
-        next = LOAD(&curr->next, ACQUIRE);
+        next = XCHG(&curr->next, INVPTR, ACQ_REL);
         Node *refs = curr->blink;
         if (FAS(&refs->refc, 1, ACQ_REL) == 1) {
             free_batch(refs);
@@ -142,14 +142,21 @@ static void try_retire(void) {
 
     for (; curr != last; curr = curr->bnext) {
         Reservation *slot = curr->slot;
-        for (;;) {
-            Node *prev = LOAD(&slot->list, ACQUIRE);
-            if (prev == INVPTR)
-                break; // Inactive, do not attach.
-            STORE(&curr->next, prev, RELAXED);
-            if (WCMPXCHG(&slot->list, &prev, curr, RELEASE, ACQUIRE)) {
-                cnt++;
-                break;
+        if (LOAD(&slot->list, ACQUIRE) == INVPTR)
+            continue;
+        STORE(&curr->next, NULL, RELEASE);
+        Node *prev = XCHG(&slot->list, curr, ACQ_REL);
+        if (prev != NULL) {
+            if (prev == INVPTR) {
+                Node *expect = curr;
+                if (CMPXCHG(&slot->list, &expect, INVPTR, ACQ_REL, RELAXED)) {
+                    continue;
+                }
+            } else {
+                Node *expect = NULL;
+                if (!CMPXCHG(&curr->next, &expect, prev, ACQ_REL, RELAXED)) {
+                    traverse(prev);
+                }
             }
         }
     }
