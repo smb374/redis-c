@@ -17,7 +17,7 @@ extern "C" {
 #endif
 
 #define RETIRE_FREQ 128
-#define ALLOC_FREQ 32
+#define ALLOC_FREQ 128
 #define REFC_PROTECT (1UL << 63)
 #define INVPTR ((void *) -1LL)
 

@@ -3,6 +3,7 @@
 #include <thread>
 #include <vector>
 
+#include "crystalline.h"
 #include "hpmap.h"
 #include "utils.h"
 
@@ -29,10 +30,12 @@ class HPMapTest : public ::testing::Test {
 protected:
     // Use a large enough table to avoid insertion failures due to capacity.
     // static const size_t MAP_SIZE = 1 << 16; // 65536
-    static const size_t MAP_SIZE = 128;
+    static const size_t MAP_SIZE = 1024;
     static const size_t NUM_THREADS = 8;
 
     void SetUp() override {
+        gc_init();
+        gc_reg();
         map = hpm_new(nullptr, MAP_SIZE);
         ASSERT_NE(map, nullptr);
     }
@@ -41,6 +44,7 @@ protected:
         // In a real scenario with GC, we'd need to make sure all nodes are freed.
         // For this test, we assume nodes are managed correctly and just destroy the table structure.
         hpm_destroy(map);
+        gc_unreg();
     }
 };
 
@@ -80,6 +84,7 @@ TEST_F(HPMapTest, MultiThreadAllNodesPresent) {
 
     for (size_t i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&, thread_id = i]() {
+            gc_reg();
             uint64_t start_key = thread_id * keys_per_thread;
             uint64_t end_key = start_key + keys_per_thread;
 
@@ -89,6 +94,7 @@ TEST_F(HPMapTest, MultiThreadAllNodesPresent) {
                 all_entries[k] = entry;
                 ASSERT_TRUE(hpm_add(map, &entry->node, test_entry_eq));
             }
+            gc_unreg();
         });
     }
 
@@ -124,6 +130,7 @@ TEST_F(HPMapTest, MultiThreadMixedReadWrite) {
 
     for (size_t i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&]() {
+            gc_reg();
             std::mt19937 rng(std::hash<std::thread::id>{}(std::this_thread::get_id()));
             std::uniform_int_distribution<uint64_t> key_dist(0, key_space - 1);
             std::uniform_int_distribution<int> op_dist(0, 99);
@@ -144,6 +151,7 @@ TEST_F(HPMapTest, MultiThreadMixedReadWrite) {
                     hpm_remove(map, &query.node, test_entry_eq);
                 }
             }
+            gc_unreg();
         });
     }
 

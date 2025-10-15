@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <random>
 #include <thread>
+#include "crystalline.h"
 
 extern "C" {
 #include "hpmap.h"
@@ -35,6 +36,8 @@ public:
     void SetUp(const ::benchmark::State &state) override {
         if (state.thread_index() == 0) {
             // First thread initializes the map
+            gc_init();
+            gc_reg();
             g_hpmap = hpm_new(nullptr, 1 << 20); // Start with a 1M element capacity
 
             // Pre-populate with 500k entries for lookup/delete tests
@@ -52,6 +55,7 @@ public:
             while (!g_initialized.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
             }
+            gc_reg();
         }
     }
 
@@ -62,6 +66,7 @@ public:
             g_hpmap = nullptr;
             g_initialized.store(false, std::memory_order_release);
         }
+        gc_unreg();
     }
 };
 
