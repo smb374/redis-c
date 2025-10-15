@@ -77,11 +77,8 @@ void pool_init(ThreadPool *pool, bool (*res_cb)(cnode *)) {
     ev_async_start(pool->loop, &pool->rev);
     // setup result queue
     pool->result_q = cq_init(NULL, QUEUESIZE * WORKERS);
-    // setup GC
-    gc_init();
 }
 void pool_start(ThreadPool *pool, cnode *(*f)(cnode *) ) {
-    gc_reg();
     for (int i = 0; i < WORKERS; i++) {
         wctx *w = calloc(1, sizeof(wctx));
 
@@ -119,7 +116,6 @@ void pool_stop(ThreadPool *pool) {
         cq_destroy(w->q);
         free(w);
     }
-    gc_unreg();
 }
 void pool_destroy(ThreadPool *pool) {
     ev_async_stop(pool->loop, &pool->rev);

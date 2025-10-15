@@ -6,11 +6,9 @@
 
 extern "C" {
 #include "cskiplist.h"
-#include "qsbr.h"
 }
 
 // Define the global QSBR instance for the test executable
-qsbr *g_qsbr_gc = nullptr;
 
 class CSkipListTest : public ::testing::Test {
 protected:
@@ -18,8 +16,6 @@ protected:
 
     void SetUp() override {
         // Initialize the global QSBR for each test
-        g_qsbr_gc = qsbr_init(nullptr, 65536);
-        ASSERT_TRUE(g_qsbr_gc != nullptr);
 
         // Initialize the skip list
         list = csl_new(nullptr);
@@ -27,15 +23,12 @@ protected:
 
     void TearDown() override {
         // Ensure all memory is reclaimed before the next test
-        qsbr_destroy(g_qsbr_gc);
-        g_qsbr_gc = nullptr;
         csl_destroy(list);
         list = nullptr;
     }
 };
 
 TEST_F(CSkipListTest, InsertLookupRemove) {
-    qsbr_tid main_tid = qsbr_reg(g_qsbr_gc);
     long val1 = 100;
     long val2 = 200;
 
@@ -55,12 +48,10 @@ TEST_F(CSkipListTest, InsertLookupRemove) {
 
     // Remove
     ASSERT_EQ(csl_remove(list, {10, 0}), &val3);
-    qsbr_quiescent(g_qsbr_gc, main_tid); // Allow GC to proceed
     ASSERT_EQ(csl_lookup(list, {10, 0}), nullptr);
 
     // Remove non-existent
     ASSERT_EQ(csl_remove(list, {10, 0}), nullptr);
-    qsbr_quiescent(g_qsbr_gc, main_tid);
 }
 
 TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
@@ -69,7 +60,6 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
     std::vector<std::thread> threads;
 
     auto worker = [&](int thread_id) {
-        qsbr_tid tid = qsbr_reg(g_qsbr_gc);
         uint64_t start_key = thread_id * keys_per_thread;
         uint64_t end_key = start_key + keys_per_thread;
 
@@ -82,7 +72,6 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
         }
 
         // Mark quiescent state
-        qsbr_quiescent(g_qsbr_gc, tid);
 
         // Verify all inserted keys can be found
         for (uint64_t i = start_key; i < end_key; ++i) {
@@ -90,7 +79,6 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
         }
 
         // Mark quiescent state
-        qsbr_quiescent(g_qsbr_gc, tid);
 
         // Remove all keys
         for (uint64_t i = start_key; i < end_key; ++i) {
@@ -98,7 +86,6 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
         }
         // Make sure that all callbacks are visible & ran.
         for (int i = 0; i < 4; i++) {
-            qsbr_quiescent(g_qsbr_gc, tid);
             usleep(500);
         }
     };
@@ -117,7 +104,6 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
 }
 
 TEST_F(CSkipListTest, PopMinSingleThreaded) {
-    qsbr_tid main_tid = qsbr_reg(g_qsbr_gc);
     long val1 = 10, val2 = 20, val3 = 30;
 
     // Pop from empty list
@@ -130,11 +116,8 @@ TEST_F(CSkipListTest, PopMinSingleThreaded) {
 
     // Pop items and check order
     ASSERT_EQ(csl_pop_min(list), &val1);
-    qsbr_quiescent(g_qsbr_gc, main_tid);
     ASSERT_EQ(csl_pop_min(list), &val2);
-    qsbr_quiescent(g_qsbr_gc, main_tid);
     ASSERT_EQ(csl_pop_min(list), &val3);
-    qsbr_quiescent(g_qsbr_gc, main_tid);
 
     // List should be empty now
     ASSERT_EQ(csl_pop_min(list), nullptr);
@@ -155,10 +138,8 @@ TEST_F(CSkipListTest, PopMinConcurrent) {
     }
 
     auto pop_worker = [&]() {
-        qsbr_tid tid = qsbr_reg(g_qsbr_gc);
         while (true) {
             void *val = csl_pop_min(list);
-            qsbr_quiescent(g_qsbr_gc, tid);
             if (val) {
                 pop_count++;
             } else if (csl_find_min_key(list).key == UINT64_MAX) {

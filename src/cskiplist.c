@@ -8,7 +8,6 @@
 #include <strings.h>
 #include <time.h>
 
-#include "qsbr.h"
 #include "utils.h"
 
 // Should work on 8-byte aligned & above pointers on 64-bit machines
@@ -24,7 +23,7 @@ static bool seeded = false;
 static int32_t grand() {
     // Mask is to handle when random() generates 0xFFFFFFFFFFFFFFFF
     // s.t. the ffs can report 64 on 0x8000000000000000
-    return __builtin_ffsll(~(random() & 0x7FFFFFFFFFFFFFFF));
+    return ffsll(~(random() & 0x7FFFFFFFFFFFFFFF));
 }
 
 int cskey_cmp(CSKey l, CSKey r) {
@@ -61,8 +60,6 @@ RETRY:
                     break;
                 succ = untag_ptr(snext);
             }
-            // if (succ->key >= key)
-            //     break;
             if (cskey_cmp(succ->key, key) >= 0)
                 break;
             pred = succ;
@@ -76,7 +73,7 @@ RETRY:
             CSNode *curr = pnext;
             while (curr != succ) {
                 CSNode *next = untag_ptr(LOAD(&curr->next[i], memory_order_acquire));
-                qsbr_alloc_cb(g_qsbr_gc, free, curr);
+                // TODO: use Crystalline-LW
                 curr = next;
             }
         }
@@ -132,7 +129,6 @@ void *csl_lookup(CSList *l, CSKey key) {
     CSNode *preds[CSKIPLIST_MAX_LEVELS], *succs[CSKIPLIST_MAX_LEVELS];
     csl_search(l, key, preds, succs);
 
-    // return (succs[0]->key == key) ? LOAD(&succs[0]->ptr, memory_order_acquire) : NULL;
     return (!cskey_cmp(succs[0]->key, key)) ? LOAD(&succs[0]->ptr, memory_order_acquire) : NULL;
 }
 
@@ -141,8 +137,6 @@ void *csl_remove(CSList *l, CSKey key) {
     void *val;
     csl_search(l, key, preds, succs);
 
-    // if (succs[0]->key != key)
-    //     return NULL;
     if (cskey_cmp(succs[0]->key, key))
         return NULL;
 
@@ -189,8 +183,6 @@ RETRY:
     }
     node = succ;
 
-    // if (node->key == UINT64_MAX)
-    //     return NULL;
     if (!cskey_cmp(node->key, l->tail.key))
         return NULL;
 
@@ -215,7 +207,6 @@ void *csl_update(CSList *l, CSKey key, void *val) {
 
 RETRY:
     csl_search(l, key, preds, succs);
-    // if (succs[0]->key == key) {
     if (!cskey_cmp(succs[0]->key, key)) {
         for (;;) {
             void *oval = LOAD(&succs[0]->ptr, memory_order_acquire);
@@ -249,11 +240,10 @@ RETRY:
                 break;
             }
 
-            // if (succ->key == key) {
             if (!cskey_cmp(succ->key, key)) {
                 succ = untag_ptr(succ->next[i]);
             }
-            snip = CMPXCHG(&pred->next[i], &succ, nnode, memory_order_acq_rel, memory_order_relaxed);
+            snip = CMPXCHG(&pred->next[i], &succ, nnode, ACQ_REL, RELAXED);
             if (snip)
                 break;
 

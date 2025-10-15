@@ -1,6 +1,5 @@
 #include <assert.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,7 +7,6 @@
 #include <strings.h>
 
 #include "hashtable.h"
-#include "qsbr.h"
 
 // Internal Functions
 void ht_init(HTable *ht, size_t n) {

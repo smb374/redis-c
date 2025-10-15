@@ -13,10 +13,10 @@
 
 #include "connection.h"
 #include "cqueue.h"
+#include "crystalline.h"
 #include "cskiplist.h"
 #include "hpmap.h"
 #include "parse.h"
-#include "qsbr.h"
 #include "ringbuf.h"
 #include "serialize.h"
 #include "thread_pool.h"
@@ -101,7 +101,7 @@ static void kv_expire_cb(EV_P_ ev_timer *w, const int revents) {
 
 static Entry *create_empty_entry(vstr *key) {
     assert(key);
-    Entry *ent = calloc(1, sizeof(Entry));
+    Entry *ent = gc_calloc(1, sizeof(Entry));
     spin_rw_init(&ent->lock);
     vstr_cpy(&ent->key, key);
     ent->type = ENT_INIT;
@@ -111,7 +111,7 @@ static Entry *create_empty_entry(vstr *key) {
     return ent;
 }
 
-static void entry_destroy(void *p) {
+static void entry_clean(void *p) {
     if (!p)
         return;
     Entry *ent = p;
@@ -125,8 +125,6 @@ static void entry_destroy(void *p) {
             zset_destroy(&ent->val.zs);
             break;
     }
-
-    free(ent);
 }
 
 bool entry_eq(BNode *ln, BNode *rn) {
@@ -148,8 +146,15 @@ KVStore *kv_new(KVStore *kv) {
     csl_new(&kv->expire);
     return kv;
 }
+
+bool entry_catcher(BNode *node, void *arg) {
+    Entry *ent = container_of(node, Entry, node);
+    gc_retire_custom(ent, entry_clean);
+    return true;
+}
+
 void kv_clear(KVStore *kv) {
-    // TODO: Purge all nodes & Send to GC
+    hpm_foreach(kv->store, entry_catcher, NULL, entry_eq);
     pool_destroy(&kv->pool);
     hpm_destroy(kv->store);
     csl_destroy(&kv->expire);
@@ -218,7 +223,7 @@ uint64_t kv_clean_expired(KVStore *kv) {
             } else {
                 BNode *res = hpm_remove(kv->store, &ent->node, entry_eq);
                 if (res) {
-                    qsbr_alloc_cb(g_qsbr_gc, entry_destroy, ent);
+                    gc_retire_custom(ent, entry_clean);
                 }
                 expire_ms = csl_find_min_key(&kv->expire);
             }
@@ -246,6 +251,7 @@ void do_get(KVStore *kv, RingBuf *out, vstr *kstr) {
     }
 
     Entry *ent = container_of(node, Entry, node);
+    ent = gc_protect((void **) &ent, 0);
     spin_rw_rlock(&ent->lock);
     if (ent->type != ENT_STR) {
         out_err(out, ERR_BAD_TYP, "not a string");
@@ -262,9 +268,10 @@ void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
     BNode *node = hpm_upsert(kv->store, &e->node, entry_eq);
     if (!node) {
         out_err(out, ERR_UNKNOWN, "store not initialized");
-        free(e);
+        gc_retire_custom(e, entry_clean);
     } else {
         Entry *found = container_of(node, Entry, node);
+        found = gc_protect((void **) &found, 0);
         spin_rw_wlock(&found->lock);
         switch (found->type) {
             case ENT_INIT:
@@ -274,13 +281,13 @@ void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
                 break;
             case ENT_ZSET:
                 spin_rw_wunlock(&found->lock);
-                free(e);
+                gc_retire_custom(e, entry_clean);
                 out_err(out, ERR_BAD_TYP, "non string entry");
                 return;
         }
         spin_rw_wunlock(&found->lock);
         if (found != e) {
-            free(e);
+            gc_retire_custom(e, entry_clean);
         }
         out_nil(out);
     }
@@ -297,7 +304,7 @@ void do_del(KVStore *kv, RingBuf *out, vstr *kstr) {
         out_int(out, 0);
     } else {
         Entry *ent = container_of(node, Entry, node);
-        // TODO: Send to GC
+        gc_retire_custom(ent, entry_clean);
         out_int(out, 1);
     }
 }
@@ -305,6 +312,7 @@ void do_del(KVStore *kv, RingBuf *out, vstr *kstr) {
 bool keys_cb(BNode *node, void *arg) {
     RingBuf *out = (RingBuf *) arg;
     Entry *ent = container_of(node, Entry, node);
+    ent = gc_protect((void **) &ent, 0);
     vstr *key;
     spin_rw_rlock(&ent->lock);
     key = container_of(node, Entry, node)->key;
@@ -327,10 +335,11 @@ void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *na
     BNode *node = hpm_upsert(kv->store, &e->node, entry_eq);
     if (!node) {
         out_err(out, ERR_UNKNOWN, "store not initialized");
-        free(e);
+        gc_retire_custom(e, entry_clean);
         return;
     } else {
         Entry *found = container_of(node, Entry, node);
+        found = gc_protect((void **) &found, 0);
         spin_rw_wlock(&found->lock);
         switch (found->type) {
             case ENT_INIT:
@@ -346,7 +355,7 @@ void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *na
         }
         spin_rw_wunlock(&found->lock);
         if (found != e) {
-            free(e);
+            gc_retire_custom(e, entry_clean);
         }
     }
 
@@ -364,6 +373,7 @@ void do_zrem(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
         out_int(out, 0);
     } else {
         Entry *ent = container_of(node, Entry, node);
+        ent = gc_protect((void **) &ent, 0);
         spin_rw_wlock(&ent->lock);
         if (ent->type != ENT_ZSET) {
             spin_rw_wunlock(&ent->lock);
@@ -390,6 +400,7 @@ void do_zscore(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
         out_nil(out);
     } else {
         Entry *ent = container_of(node, Entry, node);
+        ent = gc_protect((void **) &ent, 0);
         spin_rw_rlock(&ent->lock);
         if (ent->type != ENT_ZSET) {
             spin_rw_runlock(&ent->lock);
@@ -420,6 +431,7 @@ void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *
     }
 
     Entry *ent = container_of(node, Entry, node);
+    ent = gc_protect((void **) &ent, 0);
     spin_rw_rlock(&ent->lock);
     if (ent->type != ENT_ZSET) {
         spin_rw_runlock(&ent->lock);
@@ -464,6 +476,7 @@ void do_pttl(KVStore *kv, RingBuf *out, vstr *kstr) {
     }
 
     const Entry *ent = container_of(node, Entry, node);
+    ent = gc_protect((void **) &ent, 0);
     if (!cskey_cmp(ent->expire_ms, NOEXPIRE)) {
         out_int(out, -1);
         return;
@@ -483,6 +496,7 @@ void do_pexpire(KVStore *kv, RingBuf *out, vstr *kstr, int64_t ttl) {
     BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
     if (node) {
         Entry *ent = container_of(node, Entry, node);
+        ent = gc_protect((void **) &ent, 0);
         kv_set_ttl(kv, ent, ttl);
     }
     out_int(out, node ? 1 : 0);

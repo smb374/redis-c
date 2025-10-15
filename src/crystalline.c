@@ -26,6 +26,7 @@ struct Node {
         _Atomic(Node *) next;
     };
     Node *blink;
+    void (*on_free)(void *arg);
 };
 struct Reservation {
     _Atomic(Node *) list;
@@ -86,9 +87,11 @@ void gc_reg(void) {
 }
 
 void gc_unreg(void) {
-    gc_clear();
-    FAAND(&active, ~(1ULL << TID), ACQ_REL);
-    TID = -1;
+    if (TID != -1) {
+        gc_clear();
+        FAAND(&active, ~(1ULL << TID), ACQ_REL);
+        TID = -1;
+    }
 }
 
 void *gc_alloc(size_t size) {
@@ -126,6 +129,9 @@ static void free_batch(Node *refs) {
     do {
         Node *obj = n;
         n = n->bnext;
+        if (obj->on_free) {
+            obj->on_free(node_to_ptr(obj));
+        }
         free(obj);
     } while (n);
 }
@@ -190,12 +196,13 @@ static void try_retire(void) {
     batch.counter = 0;
 }
 
-void gc_retire(void *ptr) {
+void gc_retire_custom(void *ptr, void (*on_free)(void *)) {
     assert(TID != -1 && "Thread not registered");
     if (!ptr)
         return;
 
     Node *node = ptr_to_node(ptr);
+    node->on_free = on_free;
 
     if (!batch.first) {
         batch.refs = node;
@@ -214,6 +221,8 @@ void gc_retire(void *ptr) {
         try_retire();
     }
 }
+
+void gc_retire(void *ptr) { gc_retire_custom(ptr, NULL); }
 
 static u64 update_epoch(u64 curr_epoch, int index) {
     Reservation *r = &rsrv[TID][index];

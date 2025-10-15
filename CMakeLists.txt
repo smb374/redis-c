@@ -50,7 +50,6 @@ add_library(common_lib STATIC
         src/kvstore.c
         src/cqueue.c
         src/thread_pool.c
-        src/qsbr.c
         src/cskiplist.c
         src/hpmap.c
         src/crystalline.c
@@ -116,10 +115,6 @@ add_test(NAME cqueue_test COMMAND cqueue_test)
 add_executable(thread_pool_test tests/thread_pool_test.cpp)
 target_link_libraries(thread_pool_test PRIVATE common_lib gtest_main pthread)
 add_test(NAME thread_pool_test COMMAND thread_pool_test)
-## qsbr_test
-add_executable(qsbr_test tests/qsbr_test.cpp)
-target_link_libraries(qsbr_test PRIVATE common_lib gtest_main pthread)
-add_test(NAME qsbr_test COMMAND qsbr_test)
 ## cskiplist_test
 add_executable(cskiplist_test tests/cskiplist_test.cpp)
 target_link_libraries(cskiplist_test PRIVATE common_lib gtest_main pthread atomic)
@@ -144,7 +139,6 @@ set_tests_properties(
         kvstore_test
         cqueue_test
         thread_pool_test
-        qsbr_test
         cskiplist_test
         hpmap_test
         crystalline_test

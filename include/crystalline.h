@@ -26,6 +26,7 @@ void gc_reg(void);
 void gc_unreg(void);
 void *gc_alloc(size_t size);
 void *gc_calloc(size_t nmemb, size_t size);
+void gc_retire_custom(void *ptr, void (*on_free)(void *));
 void gc_retire(void *ptr);
 void *gc_protect(void **obj, int index);
 void gc_clear(void);

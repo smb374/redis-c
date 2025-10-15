@@ -10,12 +10,10 @@
 
 #include "crystalline.h"
 #include "parse.h"
-#include "qsbr.h"
 #include "ringbuf.h"
 #include "serialize.h"
 #include "utils.h"
 
-qsbr *g_qsbr_gc = nullptr;
 
 // --- Test Fixture ---
 class KVStoreTest : public ::testing::Test {
@@ -28,13 +26,11 @@ protected:
         gc_reg();
         kv = kv_new(nullptr);
         rb_init(&out, 1024);
-        g_qsbr_gc = qsbr_init(nullptr, 65536);
     }
 
     void TearDown() override {
         kv_clear(kv);
         rb_destroy(&out);
-        qsbr_destroy(g_qsbr_gc);
         gc_unreg();
     }
 
@@ -280,8 +276,6 @@ TEST_F(KVStoreTest, ZQueryCommand) {
 }
 
 TEST_F(KVStoreTest, Expiration) {
-    qsbr_tid main_tid = qsbr_reg(g_qsbr_gc);
-
     // SET key value
     OwnedRequest set_req = create_req({"set", "tempkey", "tempvalue"});
     do_owned_req(kv, &set_req, &out);
@@ -311,7 +305,6 @@ TEST_F(KVStoreTest, Expiration) {
 
     // Manually process expired keys
     kv_clean_expired(kv);
-    qsbr_quiescent(g_qsbr_gc, main_tid); // Allow GC to proceed
 
     // GET expired key
     OwnedRequest get_expired_req = create_req({"get", "tempkey"});
