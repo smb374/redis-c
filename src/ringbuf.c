@@ -5,7 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/param.h>
+
+#include "utils.h"
 
 void rb_init(RingBuf *rb, size_t cap) {
     if (!rb)

@@ -2,16 +2,15 @@
 // Created by poyehchen on 9/28/25.
 //
 #include "zset.h"
-#include "hashtable.h"
-#include "utils.h"
 
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/param.h>
 
+#include "hashtable.h"
+#include "utils.h"
 
 ZNode *znode_new(const char *name, const size_t len, const double score) {
     ZNode *node = calloc(1, sizeof(ZNode) + len);

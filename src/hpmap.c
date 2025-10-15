@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,9 +36,7 @@ struct HPTable {
 struct HPMap {
     _Atomic(struct HPTable *) active; // GC
     atomic_u64 migrate_pos, mthreads, size, epoch;
-    atomic_bool migration_started;
-    pthread_mutex_t mlock;
-    pthread_cond_t mcond;
+    atomic_bool migrate_started;
     bool is_alloc;
 };
 
@@ -260,9 +259,9 @@ BEGIN:
 
 static void migrate_seg(struct HPMap *m, struct HPTable *t, struct HPTable *nxt, u64 seg, node_eq eq) {
     pthread_mutex_lock(&t->segments[seg].lock);
-    u64 start = seg * SEGMENT_SIZE, end = (seg + 1) * SEGMENT_SIZE;
-    for (u64 i = start; i < end; i++) {
-        struct BNode *node = LOAD(&t->buckets[i].node, RELAXED);
+    u64 start = seg * SEGMENT_SIZE;
+    for (u64 i = 0; i < SEGMENT_SIZE; i++) {
+        struct BNode *node = LOAD(&t->buckets[start + i].node, RELAXED);
         if (node) {
             hpt_upsert(nxt, node, eq);
         }
@@ -282,25 +281,26 @@ static void migrate_helper(struct HPMap *m, struct HPTable *t, struct HPTable *n
         }
 
         if (FAS(&m->mthreads, 1, ACQ_REL) == 1) {
-            pthread_mutex_lock(&m->mlock);
             struct HPTable *old_t = XCHG(&m->active, nxt, ACQ_REL);
-            STORE(&m->migration_started, false, RELEASE);
+            STORE(&m->migrate_started, false, RELEASE);
             hpt_destroy(old_t);
-            pthread_cond_broadcast(&m->mcond);
-            pthread_mutex_unlock(&m->mlock);
             return;
         }
     }
     u64 epoch = LOAD(&m->epoch, ACQUIRE);
-    // pthread_mutex_lock(&m->mlock);
     int spin = 0;
-    while (LOAD(&m->migration_started, ACQUIRE) || epoch == LOAD(&m->epoch, ACQUIRE)) {
-        // pthread_cond_wait(&m->mcond, &m->mlock);
-        if (spin < 9)
-            spin++;
-        usleep(1 << spin);
+    while (LOAD(&m->migrate_started, ACQUIRE) && epoch == LOAD(&m->epoch, ACQUIRE)) {
+        if (spin < 5) {
+#if defined(__i386__) || defined(__x86_64__)
+            __asm__ __volatile__("pause");
+#elif defined(__aarch64__) || defined(__arm__)
+            __asm__ __volatile__("yield");
+#endif
+        } else {
+            usleep(1 << MIN(spin - 5, 9));
+        }
+        spin++;
     }
-    // pthread_mutex_unlock(&m->mlock);
 }
 
 struct HPMap *hpm_new(struct HPMap *m, size_t size) {
@@ -316,8 +316,6 @@ struct HPMap *hpm_new(struct HPMap *m, size_t size) {
     m->migrate_pos = 0;
     m->mthreads = 0;
     m->epoch = 0;
-    pthread_mutex_init(&m->mlock, NULL);
-    pthread_cond_init(&m->mcond, NULL);
     return m;
 }
 void hpm_destroy(struct HPMap *m) {
@@ -333,8 +331,6 @@ void hpm_destroy(struct HPMap *m) {
     m->migrate_pos = 0;
     m->mthreads = 0;
     m->epoch = 0;
-    pthread_mutex_destroy(&m->mlock);
-    pthread_cond_destroy(&m->mcond);
 
     if (m->is_alloc) {
         free(m);
@@ -387,7 +383,7 @@ RETRY:
             struct HPTable *nt = hpt_new(cap << 1);
             struct HPTable *expect = NULL;
             STORE(&m->migrate_pos, 0, RELEASE);
-            STORE(&m->migration_started, true, RELEASE);
+            STORE(&m->migrate_started, true, RELEASE);
             if (!CMPXCHG(&t->next, &expect, nt, ACQ_REL, RELAXED)) {
                 hpt_destroy(nt);
             }
@@ -447,7 +443,7 @@ RETRY:
             struct HPTable *nt = hpt_new(cap << 1);
             struct HPTable *expect = NULL;
             STORE(&m->migrate_pos, 0, RELEASE);
-            STORE(&m->migration_started, true, RELEASE);
+            STORE(&m->migrate_started, true, RELEASE);
             if (!CMPXCHG(&t->next, &expect, nt, ACQ_REL, RELAXED)) {
                 hpt_destroy(nt);
             }

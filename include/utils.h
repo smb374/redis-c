@@ -22,7 +22,11 @@ typedef int32_t i32;
 typedef int64_t i64;
 
 #define container_of(ptr, T, member) ((T *) ((char *) (ptr) - offsetof(T, member)))
+
 #define IS_POW_2(n) (((n) > 0) && (((n) & ((n) - 1)) == 0))
+#define MIN(x, y) ((y) ^ (((x) ^ (y)) & -((x) < (y))))
+#define MAX(x, y) ((x) ^ (((x) ^ (y)) & -((x) < (y))))
+
 struct vstr {
     uint32_t len;
     char dat[];
