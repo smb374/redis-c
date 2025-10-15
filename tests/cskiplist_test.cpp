@@ -3,6 +3,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include "crystalline.h"
 
 extern "C" {
 #include "cskiplist.h"
@@ -15,8 +16,8 @@ protected:
     CSList *list = nullptr;
 
     void SetUp() override {
-        // Initialize the global QSBR for each test
-
+        gc_init();
+        gc_reg();
         // Initialize the skip list
         list = csl_new(nullptr);
     }
@@ -25,6 +26,7 @@ protected:
         // Ensure all memory is reclaimed before the next test
         csl_destroy(list);
         list = nullptr;
+        gc_unreg();
     }
 };
 
@@ -60,6 +62,7 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
     std::vector<std::thread> threads;
 
     auto worker = [&](int thread_id) {
+        gc_reg();
         uint64_t start_key = thread_id * keys_per_thread;
         uint64_t end_key = start_key + keys_per_thread;
 
@@ -88,6 +91,7 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
         for (int i = 0; i < 4; i++) {
             usleep(500);
         }
+        gc_unreg();
     };
 
     for (int i = 0; i < num_threads; ++i) {
@@ -138,6 +142,7 @@ TEST_F(CSkipListTest, PopMinConcurrent) {
     }
 
     auto pop_worker = [&]() {
+        gc_reg();
         while (true) {
             void *val = csl_pop_min(list);
             if (val) {
@@ -146,6 +151,7 @@ TEST_F(CSkipListTest, PopMinConcurrent) {
                 break;
             }
         }
+        gc_unreg();
     };
 
     for (int i = 0; i < num_threads; ++i) {

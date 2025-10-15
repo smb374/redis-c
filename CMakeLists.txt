@@ -46,7 +46,6 @@ add_library(common_lib STATIC
         src/skiplist.c
         src/zset.c
         src/serialize.c
-        src/heap.c
         src/kvstore.c
         src/cqueue.c
         src/thread_pool.c
@@ -99,10 +98,6 @@ add_test(NAME zset_test COMMAND zset_test)
 add_executable(serialize_test tests/serialize_test.cpp)
 target_link_libraries(serialize_test PRIVATE common_lib gtest_main)
 add_test(NAME serialize_test COMMAND serialize_test)
-## heap_test
-add_executable(heap_test tests/heap_test.cpp)
-target_link_libraries(heap_test PRIVATE common_lib gtest_main)
-add_test(NAME heap_test COMMAND heap_test)
 ## kvstore_test
 add_executable(kvstore_test tests/kvstore_test.cpp)
 target_link_libraries(kvstore_test PRIVATE common_lib gtest_main)
@@ -135,7 +130,6 @@ set_tests_properties(
         skiplist_test
         zset_test
         serialize_test
-        heap_test
         kvstore_test
         cqueue_test
         thread_pool_test
@@ -146,10 +140,6 @@ set_tests_properties(
 )
 
 # # Benchmarks
-# ## chashmap_bench
-# add_executable(chashmap_bench bench/chashmap_bench.cpp)
-# target_link_libraries(chashmap_bench PRIVATE common_lib benchmark::benchmark pthread)
-
 ## hpmap_bench
 add_executable(hpmap_bench bench/hpmap_bench.cpp)
 target_link_libraries(hpmap_bench PRIVATE common_lib benchmark::benchmark pthread)

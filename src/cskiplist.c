@@ -8,6 +8,7 @@
 #include <strings.h>
 #include <time.h>
 
+#include "crystalline.h"
 #include "utils.h"
 
 // Should work on 8-byte aligned & above pointers on 64-bit machines
@@ -53,12 +54,14 @@ RETRY:
         pnext = LOAD(&pred->next[i], memory_order_acquire);
         if (is_marked(pnext))
             goto RETRY;
+        pnext = gc_protect((void **) &pnext, 0);
         for (succ = pnext;; succ = snext) {
             for (;;) {
                 snext = LOAD(&succ->next[i], memory_order_acquire);
                 if (!is_marked(snext))
                     break;
                 succ = untag_ptr(snext);
+                succ = gc_protect((void **) &succ, 0);
             }
             if (cskey_cmp(succ->key, key) >= 0)
                 break;
@@ -73,7 +76,7 @@ RETRY:
             CSNode *curr = pnext;
             while (curr != succ) {
                 CSNode *next = untag_ptr(LOAD(&curr->next[i], memory_order_acquire));
-                // TODO: use Crystalline-LW
+                gc_retire(curr);
                 curr = next;
             }
         }
@@ -116,7 +119,7 @@ void csl_destroy(CSList *l) {
 
     while (curr != &l->tail) {
         CSNode *next = curr->next[0];
-        free(curr);
+        gc_retire(curr);
         curr = next;
     }
 
@@ -200,7 +203,7 @@ RETRY:
 void *csl_update(CSList *l, CSKey key, void *val) {
     bool snip;
     CSNode *preds[CSKIPLIST_MAX_LEVELS], *succs[CSKIPLIST_MAX_LEVELS];
-    CSNode *nnode = calloc(1, sizeof(CSNode)), *pred, *succ, *nnext;
+    CSNode *nnode = gc_calloc(1, sizeof(CSNode)), *pred, *succ, *nnext;
     nnode->level = grand();
     nnode->key = key;
     atomic_init(&nnode->ptr, val);
@@ -216,8 +219,7 @@ RETRY:
             }
             snip = CMPXCHG(&succs[0]->ptr, &oval, val, memory_order_acq_rel, memory_order_relaxed);
             if (snip) {
-                // Never inserted, OK to free directly
-                free(nnode);
+                gc_retire(nnode);
                 return oval;
             }
         }
