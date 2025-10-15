@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "crystalline.h"
 #include "parse.h"
 #include "qsbr.h"
 #include "ringbuf.h"
@@ -23,6 +24,8 @@ protected:
     RingBuf out;
 
     void SetUp() override {
+        gc_init();
+        gc_reg();
         kv = kv_new(nullptr);
         rb_init(&out, 1024);
         g_qsbr_gc = qsbr_init(nullptr, 65536);
@@ -32,6 +35,7 @@ protected:
         kv_clear(kv);
         rb_destroy(&out);
         qsbr_destroy(g_qsbr_gc);
+        gc_unreg();
     }
 
     // Helper to create a simple_req from a vector of strings

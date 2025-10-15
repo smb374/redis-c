@@ -22,48 +22,8 @@ typedef struct BNode BNode;
 
 typedef bool (*node_eq)(struct BNode *, struct BNode *);
 
-struct Segment;
-typedef struct Segment Segment;
-
-struct Bucket;
-typedef struct Bucket Bucket;
-
-struct HPTable;
-typedef struct HPTable HPTable;
-
 struct HPMap;
 typedef struct HPMap HPMap;
-
-#ifndef __cplusplus
-struct Segment {
-    atomic_u64 ts;
-    pthread_mutex_t lock;
-};
-
-struct Bucket {
-    atomic_u64 hop;
-    atomic_bool in_use;
-    _Atomic(struct BNode *) node;
-};
-
-struct HPTable {
-    _Atomic(struct HPTable *) next;
-    struct Segment *segments;
-    struct Bucket *buckets;
-    u64 mask, nsegs;
-    atomic_u64 size;
-    char data[];
-};
-
-struct HPMap {
-    _Atomic(struct HPTable *) active; // GC
-    atomic_u64 migrate_pos, mthreads, size, epoch;
-    atomic_bool migration_started;
-    pthread_mutex_t mlock;
-    pthread_cond_t mcond;
-    bool is_alloc;
-};
-#endif
 
 struct HPMap *hpm_new(struct HPMap *m, size_t size);
 void hpm_destroy(struct HPMap *m);

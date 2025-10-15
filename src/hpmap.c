@@ -12,7 +12,35 @@
 #include "crystalline.h"
 #include "utils.h"
 
-// Forward declaration for the internal helper function
+struct Segment {
+    atomic_u64 ts;
+    pthread_mutex_t lock;
+};
+
+struct Bucket {
+    atomic_u64 hop;
+    atomic_bool in_use;
+    _Atomic(struct BNode *) node;
+};
+
+struct HPTable {
+    _Atomic(struct HPTable *) next;
+    struct Segment *segments;
+    struct Bucket *buckets;
+    u64 mask, nsegs;
+    atomic_u64 size;
+    char data[];
+};
+
+struct HPMap {
+    _Atomic(struct HPTable *) active; // GC
+    atomic_u64 migrate_pos, mthreads, size, epoch;
+    atomic_bool migration_started;
+    pthread_mutex_t mlock;
+    pthread_cond_t mcond;
+    bool is_alloc;
+};
+
 static bool find_closer_free_bucket(struct HPTable *t, u64 free_segment, u64 *free_bucket_idx, u64 *free_distance);
 
 #define PTR_TAG 0x8000000000000000
@@ -154,14 +182,24 @@ struct BNode *hpt_upsert(struct HPTable *t, struct BNode *n, node_eq eq) {
 }
 
 bool hpt_foreach(struct HPTable *t, bool (*f)(struct BNode *, void *), void *arg) {
-    for (u64 seg = 0; seg <= t->nsegs; seg++) {
+    for (u64 seg = 0; seg < t->nsegs; seg++) {
         u64 start = seg * SEGMENT_SIZE;
+        u64 ts_before = LOAD(&t->segments[seg].ts, ACQUIRE);
         for (u64 i = 0; i < SEGMENT_SIZE; i++) {
-            struct BNode *node = LOAD(&t->buckets[start + i].node, ACQUIRE);
-            if (node) {
-                if (!f(node, arg)) {
-                    return false;
+            for (;;) {
+                struct BNode *node = LOAD(&t->buckets[start + i].node, ACQUIRE);
+                if (node) {
+                    if (!f(node, arg)) {
+                        return false;
+                    }
+                    break;
                 }
+                u64 ts_after = LOAD(&t->segments[seg].ts, ACQUIRE);
+                if (ts_before != ts_after) {
+                    ts_before = ts_after;
+                    continue;
+                }
+                break;
             }
         }
     }
@@ -232,7 +270,7 @@ static void migrate_seg(struct HPMap *m, struct HPTable *t, struct HPTable *nxt,
     pthread_mutex_unlock(&t->segments[seg].lock);
 }
 
-static void migrate_helper(struct HPMap *m, HPTable *t, HPTable *nxt, node_eq eq) {
+static void migrate_helper(struct HPMap *m, struct HPTable *t, struct HPTable *nxt, node_eq eq) {
     if (nxt) {
         FAA(&m->mthreads, 1, ACQ_REL);
         for (;;) {
@@ -245,7 +283,7 @@ static void migrate_helper(struct HPMap *m, HPTable *t, HPTable *nxt, node_eq eq
 
         if (FAS(&m->mthreads, 1, ACQ_REL) == 1) {
             pthread_mutex_lock(&m->mlock);
-            HPTable *old_t = XCHG(&m->active, nxt, ACQ_REL);
+            struct HPTable *old_t = XCHG(&m->active, nxt, ACQ_REL);
             STORE(&m->migration_started, false, RELEASE);
             hpt_destroy(old_t);
             pthread_cond_broadcast(&m->mcond);

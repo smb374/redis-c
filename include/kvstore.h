@@ -55,7 +55,7 @@ struct Entry {
     } val;
 };
 struct KVStore {
-    HPMap store;
+    HPMap *store;
     CSList expire;
     ThreadPool pool;
     ev_timer expire_w;

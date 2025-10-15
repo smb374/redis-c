@@ -23,7 +23,7 @@
 #include "utils.h"
 #include "zset.h"
 
-#define MAX_MSG 32 << 20
+#define MAX_MSG (32 << 20)
 #define TIMEOUT 5000
 #define TIMEOUT_S 5.0
 
@@ -143,7 +143,7 @@ KVStore *kv_new(KVStore *kv) {
     } else {
         kv->is_alloc = false;
     }
-    hpm_new(&kv->store, 4096);
+    kv->store = hpm_new(NULL, 4096);
     pool_init(&kv->pool, kv_res_cb);
     csl_new(&kv->expire);
     return kv;
@@ -151,7 +151,7 @@ KVStore *kv_new(KVStore *kv) {
 void kv_clear(KVStore *kv) {
     // TODO: Purge all nodes & Send to GC
     pool_destroy(&kv->pool);
-    hpm_destroy(&kv->store);
+    hpm_destroy(kv->store);
     csl_destroy(&kv->expire);
     if (kv->is_alloc) {
         free(kv);
@@ -216,7 +216,7 @@ uint64_t kv_clean_expired(KVStore *kv) {
                 csl_update(&kv->expire, ent->expire_ms, ent);
                 expire_ms = ent->expire_ms;
             } else {
-                BNode *res = hpm_remove(&kv->store, &ent->node, entry_eq);
+                BNode *res = hpm_remove(kv->store, &ent->node, entry_eq);
                 if (res) {
                     qsbr_alloc_cb(g_qsbr_gc, entry_destroy, ent);
                 }
@@ -239,7 +239,7 @@ void do_get(KVStore *kv, RingBuf *out, vstr *kstr) {
             .node.hcode = vstr_hash_rapid(kstr),
     };
 
-    BNode *node = hpm_lookup(&kv->store, &key.node, entry_eq);
+    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_nil(out);
         return;
@@ -259,7 +259,7 @@ void do_get(KVStore *kv, RingBuf *out, vstr *kstr) {
 void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
     Entry *e = create_empty_entry(kstr);
 
-    BNode *node = hpm_upsert(&kv->store, &e->node, entry_eq);
+    BNode *node = hpm_upsert(kv->store, &e->node, entry_eq);
     if (!node) {
         out_err(out, ERR_UNKNOWN, "store not initialized");
         free(e);
@@ -292,7 +292,7 @@ void do_del(KVStore *kv, RingBuf *out, vstr *kstr) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_remove(&kv->store, &key.node, entry_eq);
+    BNode *node = hpm_remove(kv->store, &key.node, entry_eq);
     if (!node) {
         out_int(out, 0);
     } else {
@@ -315,8 +315,8 @@ bool keys_cb(BNode *node, void *arg) {
 
 // keys
 void do_keys(KVStore *kv, RingBuf *out) {
-    out_arr(out, (uint32_t) hpm_size(&kv->store));
-    hpm_foreach(&kv->store, keys_cb, out, entry_eq);
+    out_arr(out, (uint32_t) hpm_size(kv->store));
+    hpm_foreach(kv->store, keys_cb, out, entry_eq);
 }
 
 // zadd key score name
@@ -324,7 +324,7 @@ void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *na
     bool added = false;
     Entry *e = create_empty_entry(kstr);
 
-    BNode *node = hpm_upsert(&kv->store, &e->node, entry_eq);
+    BNode *node = hpm_upsert(kv->store, &e->node, entry_eq);
     if (!node) {
         out_err(out, ERR_UNKNOWN, "store not initialized");
         free(e);
@@ -359,7 +359,7 @@ void do_zrem(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(&kv->store, &key.node, entry_eq);
+    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_int(out, 0);
     } else {
@@ -385,7 +385,7 @@ void do_zscore(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(&kv->store, &key.node, entry_eq);
+    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_nil(out);
     } else {
@@ -413,7 +413,7 @@ void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(&kv->store, &key.node, entry_eq);
+    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_arr(out, 0);
         return;
@@ -457,7 +457,7 @@ void do_pttl(KVStore *kv, RingBuf *out, vstr *kstr) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(&kv->store, &key.node, entry_eq);
+    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_int(out, -2);
         return;
@@ -480,7 +480,7 @@ void do_pexpire(KVStore *kv, RingBuf *out, vstr *kstr, int64_t ttl) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(&kv->store, &key.node, entry_eq);
+    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
     if (node) {
         Entry *ent = container_of(node, Entry, node);
         kv_set_ttl(kv, ent, ttl);

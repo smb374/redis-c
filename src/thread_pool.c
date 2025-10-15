@@ -10,7 +10,7 @@
 #include <stdlib.h>
 
 #include "cqueue.h"
-#include "strings.h"
+#include "crystalline.h"
 #include "utils.h"
 
 static pthread_barrier_t barrier;
@@ -47,6 +47,7 @@ static void worker_cb(EV_P_ ev_async *w, const int revents) {
 }
 
 static void *worker_f(void *arg) {
+    gc_reg();
     wctx *ctx = (wctx *) arg;
 
     ctx->loop = ev_loop_new(0);
@@ -57,6 +58,7 @@ static void *worker_f(void *arg) {
     pthread_barrier_wait(&barrier);
 
     ev_run(ctx->loop, 0);
+    gc_unreg();
     return NULL;
 }
 
@@ -75,8 +77,11 @@ void pool_init(ThreadPool *pool, bool (*res_cb)(cnode *)) {
     ev_async_start(pool->loop, &pool->rev);
     // setup result queue
     pool->result_q = cq_init(NULL, QUEUESIZE * WORKERS);
+    // setup GC
+    gc_init();
 }
 void pool_start(ThreadPool *pool, cnode *(*f)(cnode *) ) {
+    gc_reg();
     for (int i = 0; i < WORKERS; i++) {
         wctx *w = calloc(1, sizeof(wctx));
 
@@ -114,6 +119,7 @@ void pool_stop(ThreadPool *pool) {
         cq_destroy(w->q);
         free(w);
     }
+    gc_unreg();
 }
 void pool_destroy(ThreadPool *pool) {
     ev_async_stop(pool->loop, &pool->rev);
