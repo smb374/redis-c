@@ -61,9 +61,6 @@ int main() {
     ev_signal_init(&sigterm, exit_cb, SIGTERM);
     ev_signal_start(loop, &sigint);
     ev_signal_start(loop, &sigterm);
-    // KVStore timer
-    // ev_timer_init(&kv_timer, kv_timer_cb, 1., 1.);
-    // ev_timer_start(loop, &kv_timer);
     // Setup server
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
