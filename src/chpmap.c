@@ -352,6 +352,7 @@ RETRY:
         nxt = LOAD(&t->next, ACQUIRE);
         if (nxt) {
             migrate_helper(m, t, nxt, eq);
+            qsbr_quiescent();
             continue;
         }
         break;
@@ -374,6 +375,7 @@ RETRY:
         }
         FAA(&m->size, 1, RELAXED);
         FAA(&m->epoch, 1, RELEASE);
+        qsbr_quiescent();
         return true;
     }
 
@@ -388,6 +390,7 @@ struct BNode *chpm_remove(struct CHPMap *m, struct BNode *k, node_eq eq) {
         nxt = LOAD(&t->next, ACQUIRE);
         if (nxt) {
             migrate_helper(m, t, nxt, eq);
+            qsbr_quiescent();
             continue;
         }
         break;
@@ -396,6 +399,7 @@ struct BNode *chpm_remove(struct CHPMap *m, struct BNode *k, node_eq eq) {
     if (result) {
         FAS(&m->size, 1, RELAXED);
         FAA(&m->epoch, 1, RELEASE);
+        qsbr_quiescent();
     }
     return result;
 }
@@ -411,6 +415,7 @@ RETRY:
         nxt = LOAD(&t->next, ACQUIRE);
         if (nxt) {
             migrate_helper(m, t, nxt, eq);
+            qsbr_quiescent();
             continue;
         }
         break;
@@ -433,9 +438,9 @@ RETRY:
         }
         FAA(&m->size, 1, RELAXED);
         FAA(&m->epoch, 1, RELEASE);
+        qsbr_quiescent();
     }
     result = (struct BNode *) ((uintptr_t) result & ~PTR_TAG);
-
     return result;
 }
 

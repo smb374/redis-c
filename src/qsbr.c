@@ -3,7 +3,9 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdalign.h>
+#include <stdatomic.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
 
@@ -40,12 +42,26 @@ static inline void *node_to_ptr(Node *node) {
     return (void *) ((char *) node + sizeof(Node));
 }
 
+static void process_queue(cqueue *q) {
+    if (!q)
+        return;
+    cnode *qnode = NULL;
+    while ((qnode = cq_pop(q))) {
+        Node *node = container_of(qnode, Node, qnode);
+        if (node->cb) {
+            node->cb(node_to_ptr(node));
+        }
+        free(node);
+    }
+}
+
 void qsbr_init(size_t back_logs) {
     gc.quiescent = 0;
     gc.active = 0;
     pthread_mutex_init(&gc.lock, NULL);
     gc.curr = cq_init(NULL, back_logs);
     gc.prev = cq_init(NULL, back_logs);
+    atomic_thread_fence(RELEASE);
 }
 
 void qsbr_reg() {
@@ -84,7 +100,8 @@ void qsbr_retire(void *ptr, void (*cb)(void *)) {
 
     Node *node = ptr_to_node(ptr);
 
-    if (XCHG(&node->retired, true, ACQ_REL)) {
+    bool expected = false;
+    if (!CMPXCHG(&node->retired, &expected, true, ACQ_REL, RELAXED)) {
         return;
     }
 
@@ -101,15 +118,8 @@ void qsbr_quiescent() {
             q = LOAD(&gc.quiescent, ACQUIRE);
             active = LOAD(&gc.active, ACQUIRE);
             if (q == active) {
-                cnode *qnode = NULL;
                 // Drain prev
-                while ((qnode = cq_pop(gc.prev))) {
-                    Node *node = container_of(qnode, Node, qnode);
-                    if (node->cb) {
-                        node->cb(node_to_ptr(node));
-                    }
-                    free(node);
-                }
+                process_queue(gc.prev);
                 // Safe, as threads putting to curr will use the same pointer,
                 // but we treat unfinished put as previous interval.
                 cqueue *oprev = gc.prev;
@@ -123,21 +133,8 @@ void qsbr_quiescent() {
 }
 // NOTE: Assumes exclusive access on destroy
 void qsbr_destroy() {
-    cnode *qnode;
-    while ((qnode = cq_pop(gc.prev))) {
-        Node *node = container_of(qnode, Node, qnode);
-        if (node->cb) {
-            node->cb(node_to_ptr(node));
-        }
-        free(node);
-    }
-    while ((qnode = cq_pop(gc.curr))) {
-        Node *node = container_of(qnode, Node, qnode);
-        if (node->cb) {
-            node->cb(node_to_ptr(node));
-        }
-        free(node);
-    }
+    process_queue(gc.prev);
+    process_queue(gc.curr);
     cq_destroy(gc.prev);
     cq_destroy(gc.curr);
     gc.prev = NULL;

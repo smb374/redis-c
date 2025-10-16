@@ -14,9 +14,9 @@
 #include "connection.h"
 #include "cqueue.h"
 #include "cskiplist.h"
-#include "debra.h"
 #include "hpmap.h"
 #include "parse.h"
+#include "qsbr.h"
 #include "ringbuf.h"
 #include "serialize.h"
 #include "thread_pool.h"
@@ -101,7 +101,7 @@ static void kv_expire_cb(EV_P_ ev_timer *w, const int revents) {
 
 static Entry *create_empty_entry(vstr *key) {
     assert(key);
-    Entry *ent = gc_calloc(1, sizeof(Entry));
+    Entry *ent = qsbr_calloc(1, sizeof(Entry));
     spin_rw_init(&ent->lock);
     vstr_cpy(&ent->key, key);
     ent->type = ENT_INIT;
@@ -149,7 +149,7 @@ KVStore *kv_new(KVStore *kv) {
 
 bool entry_catcher(BNode *node, void *arg) {
     Entry *ent = container_of(node, Entry, node);
-    gc_retire_custom(ent, entry_clean);
+    qsbr_retire(ent, entry_clean);
     return true;
 }
 
@@ -223,7 +223,7 @@ uint64_t kv_clean_expired(KVStore *kv) {
             } else {
                 BNode *res = chpm_remove(kv->store, &ent->node, entry_eq);
                 if (res) {
-                    gc_retire_custom(ent, entry_clean);
+                    qsbr_retire(ent, entry_clean);
                 }
                 expire_ms = csl_find_min_key(&kv->expire);
             }
@@ -267,7 +267,7 @@ void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
     BNode *node = chpm_upsert(kv->store, &e->node, entry_eq);
     if (!node) {
         out_err(out, ERR_UNKNOWN, "store not initialized");
-        gc_retire_custom(e, entry_clean);
+        qsbr_retire(e, entry_clean);
     } else {
         Entry *found = container_of(node, Entry, node);
         spin_rw_wlock(&found->lock);
@@ -279,13 +279,13 @@ void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
                 break;
             case ENT_ZSET:
                 spin_rw_wunlock(&found->lock);
-                gc_retire_custom(e, entry_clean);
+                qsbr_retire(e, entry_clean);
                 out_err(out, ERR_BAD_TYP, "non string entry");
                 return;
         }
         spin_rw_wunlock(&found->lock);
         if (found != e) {
-            gc_retire_custom(e, entry_clean);
+            qsbr_retire(e, entry_clean);
         }
         out_nil(out);
     }
@@ -302,7 +302,7 @@ void do_del(KVStore *kv, RingBuf *out, vstr *kstr) {
         out_int(out, 0);
     } else {
         Entry *ent = container_of(node, Entry, node);
-        gc_retire_custom(ent, entry_clean);
+        qsbr_retire(ent, entry_clean);
         out_int(out, 1);
     }
 }
@@ -332,7 +332,7 @@ void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *na
     BNode *node = chpm_upsert(kv->store, &e->node, entry_eq);
     if (!node) {
         out_err(out, ERR_UNKNOWN, "store not initialized");
-        gc_retire_custom(e, entry_clean);
+        qsbr_retire(e, entry_clean);
         return;
     } else {
         Entry *found = container_of(node, Entry, node);
@@ -351,7 +351,7 @@ void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *na
         }
         spin_rw_wunlock(&found->lock);
         if (found != e) {
-            gc_retire_custom(e, entry_clean);
+            qsbr_retire(e, entry_clean);
         }
     }
 

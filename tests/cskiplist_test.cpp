@@ -3,9 +3,9 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include "qsbr.h"
 
 #include "cskiplist.h"
-#include "debra.h"
 
 // Define the global QSBR instance for the test executable
 
@@ -14,9 +14,9 @@ protected:
     CSList *list = nullptr;
 
     void SetUp() override {
-        gc_init();
-        gc_reg();
         // Initialize the skip list
+        qsbr_init(65536);
+        qsbr_reg();
         list = csl_new(nullptr);
     }
 
@@ -24,7 +24,8 @@ protected:
         // Ensure all memory is reclaimed before the next test
         csl_destroy(list);
         list = nullptr;
-        gc_unreg();
+        qsbr_unreg();
+        qsbr_destroy();
     }
 };
 
@@ -60,7 +61,7 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
     std::vector<std::thread> threads;
 
     auto worker = [&](int thread_id) {
-        gc_reg();
+        qsbr_reg();
         uint64_t start_key = thread_id * keys_per_thread;
         uint64_t end_key = start_key + keys_per_thread;
 
@@ -73,6 +74,7 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
         }
 
         // Mark quiescent state
+        qsbr_quiescent();
 
         // Verify all inserted keys can be found
         for (uint64_t i = start_key; i < end_key; ++i) {
@@ -80,16 +82,19 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
         }
 
         // Mark quiescent state
+        qsbr_quiescent();
 
         // Remove all keys
         for (uint64_t i = start_key; i < end_key; ++i) {
             ASSERT_EQ(csl_remove(list, {i, 0}), &values[i - start_key]);
         }
+
+        qsbr_quiescent();
         // Make sure that all callbacks are visible & ran.
         for (int i = 0; i < 4; i++) {
             usleep(500);
         }
-        gc_unreg();
+        qsbr_unreg();
     };
 
     for (int i = 0; i < num_threads; ++i) {
@@ -103,6 +108,7 @@ TEST_F(CSkipListTest, ConcurrentInsertAndRemove) {
     for (uint64_t i = 0; i < num_threads * keys_per_thread; ++i) {
         ASSERT_EQ(csl_lookup(list, {i, 0}), nullptr);
     }
+    qsbr_quiescent();
 }
 
 TEST_F(CSkipListTest, PopMinSingleThreaded) {
@@ -140,7 +146,7 @@ TEST_F(CSkipListTest, PopMinConcurrent) {
     }
 
     auto pop_worker = [&]() {
-        gc_reg();
+        qsbr_reg();
         while (true) {
             void *val = csl_pop_min(list);
             if (val) {
@@ -149,7 +155,8 @@ TEST_F(CSkipListTest, PopMinConcurrent) {
                 break;
             }
         }
-        gc_unreg();
+        qsbr_quiescent();
+        qsbr_unreg();
     };
 
     for (int i = 0; i < num_threads; ++i) {
@@ -163,4 +170,5 @@ TEST_F(CSkipListTest, PopMinConcurrent) {
     // Check that all keys were popped exactly once
     ASSERT_EQ(pop_count.load(), num_keys);
     ASSERT_EQ(csl_find_min_key(list).key, UINT64_MAX); // List should be empty
+    qsbr_quiescent();
 }

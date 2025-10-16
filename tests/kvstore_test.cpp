@@ -8,8 +8,8 @@
 #include <unistd.h>
 #include <vector>
 
-#include "debra.h"
 #include "parse.h"
+#include "qsbr.h"
 #include "ringbuf.h"
 #include "serialize.h"
 #include "utils.h"
@@ -22,8 +22,8 @@ protected:
     RingBuf out;
 
     void SetUp() override {
-        gc_init();
-        gc_reg();
+        qsbr_init(65536);
+        qsbr_reg();
         kv = kv_new(nullptr);
         rb_init(&out, 1024);
     }
@@ -31,7 +31,8 @@ protected:
     void TearDown() override {
         kv_clear(kv);
         rb_destroy(&out);
-        gc_unreg();
+        qsbr_unreg();
+        qsbr_destroy();
     }
 
     // Helper to create a simple_req from a vector of strings

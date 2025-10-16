@@ -22,7 +22,7 @@ cqueue *cq_init(cqueue *q, size_t cap) {
     q->tail = 0;
     q->cap = cap;
     q->buf = calloc(cap, sizeof(cnode *));
-    atomic_thread_fence(memory_order_release);
+    atomic_thread_fence(RELEASE);
     return q;
 }
 void cq_destroy(cqueue *q) {
@@ -31,29 +31,29 @@ void cq_destroy(cqueue *q) {
         free(q);
 }
 bool cq_put(cqueue *q, cnode *node) {
-    size_t count = FAA(&q->count, 1, memory_order_acquire);
+    size_t count = FAA(&q->count, 1, ACQUIRE);
     if (count >= q->cap) {
         // queue is full
-        FAS(&q->count, 1, memory_order_release);
+        FAS(&q->count, 1, RELEASE);
         return false;
     }
 
-    size_t head = LOAD(&q->head, memory_order_acquire), nhead;
+    size_t head = LOAD(&q->head, ACQUIRE), nhead;
     for (;;) {
         nhead = (head + 1) % q->cap;
-        if (CMPXCHG(&q->head, &head, nhead, memory_order_acq_rel, memory_order_acquire)) {
+        if (CMPXCHG(&q->head, &head, nhead, ACQ_REL, ACQUIRE)) {
             // CMPEXG success, q->head is nhead now.
             break;
         }
         // Acquires new head on fail
     }
     // Since slot is acquired after CMPEXG success for head, we can just store the slot.
-    cnode *old = XCHG(&q->buf[head], node, memory_order_release);
+    cnode *old = XCHG(&q->buf[head], node, RELEASE);
     assert(old == NULL); // Sanity check
     return true;
 }
 cnode *cq_pop(cqueue *q) {
-    cnode *ret = XCHG(&q->buf[q->tail], NULL, memory_order_acquire);
+    cnode *ret = XCHG(&q->buf[q->tail], NULL, ACQUIRE);
     if (!ret)
         /* a thread is adding to the queue, but hasn't done the write yet
          * to actually put the item in. Act as if nothing is in the queue.
@@ -64,9 +64,9 @@ cnode *cq_pop(cqueue *q) {
         return NULL;
 
     q->tail = (q->tail + 1) % q->cap;
-    size_t r = FAS(&q->count, 1, memory_order_release);
+    size_t r = FAS(&q->count, 1, RELEASE);
     assert(r > 0);
     return ret;
 }
-size_t cq_size(cqueue *q) { return LOAD(&q->count, memory_order_relaxed); }
+size_t cq_size(cqueue *q) { return LOAD(&q->count, RELAXED); }
 size_t cq_cap(cqueue *q) { return q->cap; }

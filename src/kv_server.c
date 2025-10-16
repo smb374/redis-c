@@ -7,9 +7,9 @@
 #include <unistd.h>
 
 #include "connection.h"
-#include "crystalline.h"
 #include "kvstore.h"
 #include "parse.h"
+#include "qsbr.h"
 #include "utils.h"
 
 #define MAX_MSG 32 << 20
@@ -51,8 +51,8 @@ static void exit_cb(EV_P_ ev_signal *w, const int revents) {
 
 int main() {
     // Init KVStore.
-    gc_init();
-    gc_reg();
+    qsbr_init(65536);
+    qsbr_reg();
     kv_new(&g_data);
     struct ev_loop *loop = ev_default_loop(0);
     // Signal Handling
@@ -81,6 +81,8 @@ int main() {
     // Epilogue
     kv_clear(&g_data);
     ev_default_destroy();
-    gc_unreg();
+    qsbr_quiescent();
+    qsbr_unreg();
+    qsbr_destroy();
     logger(stderr, "INFO", "[main] Exit main loop\n");
 }

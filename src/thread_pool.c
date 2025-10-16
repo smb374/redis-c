@@ -10,7 +10,7 @@
 #include <stdlib.h>
 
 #include "cqueue.h"
-#include "crystalline.h"
+#include "qsbr.h"
 #include "utils.h"
 
 static pthread_barrier_t barrier;
@@ -28,6 +28,7 @@ static void pool_cb(EV_P_ ev_async *w, const int revents) {
         ev_break(EV_A_ EVBREAK_ALL);
         pool_stop(pool);
     }
+    qsbr_quiescent();
 }
 
 static void worker_cb(EV_P_ ev_async *w, const int revents) {
@@ -38,16 +39,18 @@ static void worker_cb(EV_P_ ev_async *w, const int revents) {
             logger(stderr, "INFO", "[worker %d] Get STOP_MAGIC, exiting...\n", ctx->id);
             ev_async_stop(EV_A_ w);
             ev_break(EV_A_ EVBREAK_ALL);
+            qsbr_quiescent();
             return;
         }
         res = ctx->f(p);
         cq_put(ctx->rq, res);
         ev_async_send(ctx->master, ctx->rev);
     }
+    qsbr_quiescent();
 }
 
 static void *worker_f(void *arg) {
-    gc_reg();
+    qsbr_reg();
     wctx *ctx = (wctx *) arg;
 
     ctx->loop = ev_loop_new(0);
@@ -58,7 +61,8 @@ static void *worker_f(void *arg) {
     pthread_barrier_wait(&barrier);
 
     ev_run(ctx->loop, 0);
-    gc_unreg();
+    qsbr_quiescent();
+    qsbr_unreg();
     return NULL;
 }
 

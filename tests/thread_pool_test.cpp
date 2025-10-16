@@ -3,10 +3,9 @@
 #include <numeric>
 #include <vector>
 
-extern "C" {
 #include "ev.h"
+#include "qsbr.h"
 #include "thread_pool.h"
-}
 
 // --- Test Data Structures ---
 struct WorkNode : public cnode {
@@ -33,6 +32,7 @@ cnode *double_value_work(cnode *work) {
     r_node->value = w_node->value * 2;
 
     delete w_node; // Worker cleans up the work item
+    qsbr_quiescent();
     return r_node;
 }
 
@@ -56,7 +56,7 @@ bool test_res_cb(cnode *node) {
     delete r_node;
 
     // If all items have been received, stop the main event loop.
-
+    qsbr_quiescent();
     return g_items_received == g_num_items;
 }
 
@@ -67,6 +67,8 @@ protected:
 
     void SetUp() override {
         // Initialize the thread pool with our callback
+        qsbr_init(65536);
+        qsbr_reg();
         pool_init(&pool, test_res_cb);
         g_main_loop = pool.loop;
 
@@ -79,6 +81,8 @@ protected:
     void TearDown() override {
         pool_destroy(&pool);
         g_main_loop = nullptr;
+        qsbr_unreg();
+        qsbr_destroy();
     }
 };
 
