@@ -9,13 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "hashtable.h"
+#include "hpmap.h"
 #include "utils.h"
 
 ZNode *znode_new(const char *name, const size_t len, const double score) {
     ZNode *node = calloc(1, sizeof(ZNode) + len);
     node->tnode.level = 1;
-    node->hnode.next = NULL;
     node->hnode.hcode = bytes_hash_rapid((const uint8_t *) name, len);
     node->score = score;
     node->len = len;
@@ -24,7 +23,7 @@ ZNode *znode_new(const char *name, const size_t len, const double score) {
     return node;
 }
 
-bool zhkey_cmp(HNode *node, HNode *key) {
+bool zhkey_cmp(BNode *node, BNode *key) {
     const ZNode *znode = container_of(node, ZNode, hnode);
     const ZHKey *hkey = container_of(key, ZHKey, node);
 
@@ -35,7 +34,7 @@ bool zhkey_cmp(HNode *node, HNode *key) {
     return !memcmp(znode->name, hkey->name, znode->len);
 }
 
-bool zhcmp(HNode *ln, HNode *rn) {
+bool zhcmp(BNode *ln, BNode *rn) {
     const ZNode *lz = container_of(ln, ZNode, hnode);
     const ZNode *rz = container_of(rn, ZNode, hnode);
 
@@ -68,7 +67,7 @@ void zset_init(ZSet *zset) {
         return;
 
     sl_init(&zset->sl);
-    bzero(&zset->hm, sizeof(HMap));
+    shpm_new(&zset->hm, 1024);
 }
 
 void zset_update(ZSet *zset, ZNode *node, const double score) {
@@ -94,7 +93,7 @@ bool zset_insert(ZSet *zset, const char *name, const size_t len, const double sc
     }
 
     node = znode_new(name, len, score);
-    hm_insert_unchecked(&zset->hm, &node->hnode);
+    shpm_upsert(&zset->hm, &node->hnode, zhcmp);
     sl_insert(&zset->sl, &node->tnode, zcmp);
     return true;
 }
@@ -108,10 +107,9 @@ void zset_delete(ZSet *zset, ZNode *node) {
             .node.hcode = bytes_hash_rapid((const uint8_t *) node->name, node->len),
     };
 
-    const HNode *found = hm_lookup(&zset->hm, &zkey.node, zhkey_cmp);
-    assert(found);
+    const BNode *found = shpm_remove(&zset->hm, &zkey.node, zhkey_cmp);
     sl_delete(&zset->sl, &node->tnode, zcmp);
-    hm_delete(&zset->hm, &node->hnode, zhcmp);
+    shpm_remove(&zset->hm, &node->hnode, zhcmp);
     free(node);
 }
 
@@ -124,7 +122,7 @@ ZNode *zset_lookup(ZSet *zset, const char *name, const size_t len) {
             .name = name,
             .node.hcode = bytes_hash_rapid((const uint8_t *) name, len),
     };
-    HNode *found = hm_lookup(&zset->hm, &zkey.node, zhkey_cmp);
+    BNode *found = shpm_lookup(&zset->hm, &zkey.node, zhkey_cmp);
     return found ? container_of(found, ZNode, hnode) : NULL;
 }
 
@@ -176,5 +174,5 @@ void zset_destroy(ZSet *zset) {
     }
 
     free(zset->sl.head);
-    hm_clear(&zset->hm);
+    shpm_destroy(&zset->hm);
 }

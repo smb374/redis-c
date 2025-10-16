@@ -26,14 +26,16 @@ static bool test_entry_eq(BNode *lhs, BNode *rhs) {
 
 // --- Benchmark Fixture ---
 
-class HPMapFixture : public benchmark::Fixture {
+class CHPMapFixture : public benchmark::Fixture {
 public:
     static CHPMap *g_hpmap;
     static std::atomic<bool> g_initialized;
+    static std::atomic<int> g_threads_finished;
 
     void SetUp(const ::benchmark::State &state) override {
         if (state.thread_index() == 0) {
             // First thread initializes the map
+            g_threads_finished.store(0, std::memory_order_relaxed);
             qsbr_init(65536);
             qsbr_reg();
             g_hpmap = chpm_new(nullptr, 1 << 20); // Start with a 1M element capacity
@@ -60,26 +62,26 @@ public:
 
     void TearDown(const ::benchmark::State &state) override {
         qsbr_quiescent();
-        if (state.thread_index() == 0) {
-            // Last thread cleans up
+        qsbr_unreg();
+
+        if (g_threads_finished.fetch_add(1, std::memory_order_acq_rel) + 1 == state.threads()) {
+            // Last thread out cleans up all resources
             chpm_destroy(g_hpmap);
             g_hpmap = nullptr;
             g_initialized.store(false, std::memory_order_release);
-            qsbr_unreg();
             qsbr_destroy();
-        } else {
-            qsbr_unreg();
         }
     }
 };
 
 // Static member initialization
-CHPMap *HPMapFixture::g_hpmap = nullptr;
-std::atomic<bool> HPMapFixture::g_initialized{false};
+CHPMap *CHPMapFixture::g_hpmap = nullptr;
+std::atomic<bool> CHPMapFixture::g_initialized{false};
+std::atomic<int> CHPMapFixture::g_threads_finished{0};
 
 // --- Pure Insert Benchmark ---
 
-BENCHMARK_DEFINE_F(HPMapFixture, BM_Insert)(benchmark::State &state) {
+BENCHMARK_DEFINE_F(CHPMapFixture, BM_Insert)(benchmark::State &state) {
     const int thread_id = state.thread_index();
     const uint64_t keys_per_thread = 1000000;
     const uint64_t base_key = 1000000 + thread_id * keys_per_thread;
@@ -96,11 +98,11 @@ BENCHMARK_DEFINE_F(HPMapFixture, BM_Insert)(benchmark::State &state) {
     }
     state.SetItemsProcessed(state.iterations());
 }
-BENCHMARK_REGISTER_F(HPMapFixture, BM_Insert)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHPMapFixture, BM_Insert)->ThreadRange(1, 8)->UseRealTime();
 
 // --- Pure Lookup Benchmark ---
 
-BENCHMARK_DEFINE_F(HPMapFixture, BM_Lookup)(benchmark::State &state) {
+BENCHMARK_DEFINE_F(CHPMapFixture, BM_Lookup)(benchmark::State &state) {
     std::mt19937 rng(state.thread_index());
     std::uniform_int_distribution<uint64_t> dist(0, 499999);
 
@@ -112,11 +114,11 @@ BENCHMARK_DEFINE_F(HPMapFixture, BM_Lookup)(benchmark::State &state) {
     }
     state.SetItemsProcessed(state.iterations());
 }
-BENCHMARK_REGISTER_F(HPMapFixture, BM_Lookup)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHPMapFixture, BM_Lookup)->ThreadRange(1, 8)->UseRealTime();
 
 // --- Upsert Benchmark ---
 
-BENCHMARK_DEFINE_F(HPMapFixture, BM_Upsert)(benchmark::State &state) {
+BENCHMARK_DEFINE_F(CHPMapFixture, BM_Upsert)(benchmark::State &state) {
     std::mt19937 rng(state.thread_index());
     std::uniform_int_distribution<uint64_t> dist(0, 999999); // Larger key space
 
@@ -131,12 +133,12 @@ BENCHMARK_DEFINE_F(HPMapFixture, BM_Upsert)(benchmark::State &state) {
     }
     state.SetItemsProcessed(state.iterations());
 }
-BENCHMARK_REGISTER_F(HPMapFixture, BM_Upsert)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHPMapFixture, BM_Upsert)->ThreadRange(1, 8)->UseRealTime();
 
 
 // --- Mixed 80/20 (80% Lookup, 20% Insert) ---
 
-BENCHMARK_DEFINE_F(HPMapFixture, BM_Mixed_80Read_20Write)(benchmark::State &state) {
+BENCHMARK_DEFINE_F(CHPMapFixture, BM_Mixed_80Read_20Write)(benchmark::State &state) {
     const int thread_id = state.thread_index();
     std::mt19937 rng(thread_id);
     std::uniform_int_distribution<uint64_t> lookup_dist(0, 499999);
@@ -165,12 +167,12 @@ BENCHMARK_DEFINE_F(HPMapFixture, BM_Mixed_80Read_20Write)(benchmark::State &stat
     }
     state.SetItemsProcessed(state.iterations());
 }
-BENCHMARK_REGISTER_F(HPMapFixture, BM_Mixed_80Read_20Write)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHPMapFixture, BM_Mixed_80Read_20Write)->ThreadRange(1, 8)->UseRealTime();
 
 
 // --- Mixed 80/10/10 (80% Lookup, 10% Insert, 10% Delete) ---
 
-BENCHMARK_DEFINE_F(HPMapFixture, BM_Mixed_CRUD)(benchmark::State &state) {
+BENCHMARK_DEFINE_F(CHPMapFixture, BM_Mixed_CRUD)(benchmark::State &state) {
     const int thread_id = state.thread_index();
     std::mt19937 rng(thread_id);
     std::uniform_int_distribution<uint64_t> key_dist(0, 499999);
@@ -203,7 +205,7 @@ BENCHMARK_DEFINE_F(HPMapFixture, BM_Mixed_CRUD)(benchmark::State &state) {
     }
     state.SetItemsProcessed(state.iterations());
 }
-BENCHMARK_REGISTER_F(HPMapFixture, BM_Mixed_CRUD)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHPMapFixture, BM_Mixed_CRUD)->ThreadRange(1, 8)->UseRealTime();
 
 
 BENCHMARK_MAIN();

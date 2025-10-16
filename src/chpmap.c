@@ -35,8 +35,6 @@ struct CHPTable {
 
 static bool find_closer_free_bucket(struct CHPTable *t, u64 free_segment, u64 *free_bucket_idx, u64 *free_distance);
 
-#define PTR_TAG 0x8000000000000000
-
 static inline void spin_wait(struct CHPMap *m) {
     u64 epoch = LOAD(&m->epoch, ACQUIRE);
     int spin = 0;
@@ -55,7 +53,7 @@ static inline void spin_wait(struct CHPMap *m) {
     }
 }
 
-struct CHPTable *hpt_new(size_t size) {
+static struct CHPTable *hpt_new(size_t size) {
     u64 cap = next_pow2(size);
     u64 buckets = cap + INSERT_RANGE, nsegs = buckets / SEGMENT_SIZE + (buckets % SEGMENT_SIZE != 0);
     struct CHPTable *t =
@@ -83,9 +81,9 @@ struct CHPTable *hpt_new(size_t size) {
     return t;
 }
 
-void hpt_destroy(struct CHPTable *t) { qsbr_retire(t, NULL); }
+static void hpt_destroy(struct CHPTable *t) { qsbr_retire(t, NULL); }
 
-struct BNode *hpt_lookup(struct CHPTable *t, struct BNode *k, node_eq eq) {
+static struct BNode *hpt_lookup(struct CHPTable *t, struct BNode *k, node_eq eq) {
     u64 hash = k->hcode;
     u64 o_buc = hash & t->mask;
     u64 o_seg = o_buc / SEGMENT_SIZE;
@@ -95,7 +93,7 @@ struct BNode *hpt_lookup(struct CHPTable *t, struct BNode *k, node_eq eq) {
         u64 hop = LOAD(&t->buckets[o_buc].hop, RELAXED);
         while (hop > 0) {
             u64 lowest_set = ffsll((i64) hop) - 1;
-            u64 curr_idx = (o_buc + lowest_set) & t->mask;
+            u64 curr_idx = o_buc + lowest_set;
             struct BNode *curr_node = LOAD(&t->buckets[curr_idx].node, RELAXED);
             if (curr_node && eq(curr_node, k)) {
                 return curr_node;
@@ -111,7 +109,7 @@ struct BNode *hpt_lookup(struct CHPTable *t, struct BNode *k, node_eq eq) {
     }
 }
 
-struct BNode *hpt_remove(struct CHPTable *t, struct BNode *k, node_eq eq) {
+static struct BNode *hpt_remove(struct CHPTable *t, struct BNode *k, node_eq eq) {
     u64 hash = k->hcode;
     u64 o_buc = hash & t->mask;
     u64 o_seg = o_buc / SEGMENT_SIZE;
@@ -121,7 +119,7 @@ struct BNode *hpt_remove(struct CHPTable *t, struct BNode *k, node_eq eq) {
     u64 hop = LOAD(&t->buckets[o_buc].hop, RELAXED);
     while (hop > 0) {
         u64 lowest_set = ffsll((i64) hop) - 1;
-        u64 curr_idx = (o_buc + lowest_set) & t->mask;
+        u64 curr_idx = o_buc + lowest_set;
         struct BNode *curr_node = LOAD(&t->buckets[curr_idx].node, RELAXED);
         if (curr_node && eq(curr_node, k)) {
             STORE(&t->buckets[curr_idx].node, NULL, RELAXED);
@@ -138,7 +136,7 @@ struct BNode *hpt_remove(struct CHPTable *t, struct BNode *k, node_eq eq) {
     return NULL;
 }
 
-struct BNode *hpt_upsert(struct CHPTable *t, struct BNode *n, node_eq eq) {
+static struct BNode *hpt_upsert(struct CHPTable *t, struct BNode *n, node_eq eq) {
     u64 hash = n->hcode;
     u64 o_buc = hash & t->mask;
     u64 o_seg = o_buc / SEGMENT_SIZE;
@@ -153,7 +151,7 @@ struct BNode *hpt_upsert(struct CHPTable *t, struct BNode *n, node_eq eq) {
     u64 hop = LOAD(&t->buckets[o_buc].hop, RELAXED);
     while (hop > 0) {
         u64 lowest_set = ffsll((i64) hop) - 1;
-        u64 curr_idx = (o_buc + lowest_set) & t->mask;
+        u64 curr_idx = o_buc + lowest_set;
         struct BNode *curr_node = LOAD(&t->buckets[curr_idx].node, RELAXED);
         if (curr_node && eq(curr_node, n)) {
             pthread_mutex_unlock(&t->segments[o_seg].lock);
@@ -190,7 +188,7 @@ struct BNode *hpt_upsert(struct CHPTable *t, struct BNode *n, node_eq eq) {
     }
 }
 
-bool hpt_foreach(struct CHPTable *t, bool (*f)(struct BNode *, void *), void *arg) {
+static bool hpt_foreach(struct CHPTable *t, bool (*f)(struct BNode *, void *), void *arg) {
     for (u64 seg = 0; seg < t->nsegs; seg++) {
         u64 start = seg * SEGMENT_SIZE;
         u64 ts_before = LOAD(&t->segments[seg].ts, ACQUIRE);
@@ -214,20 +212,20 @@ bool hpt_foreach(struct CHPTable *t, bool (*f)(struct BNode *, void *), void *ar
     return true;
 }
 
-u64 hpt_size(struct CHPTable *t) { return LOAD(&t->size, RELAXED); }
+static u64 hpt_size(struct CHPTable *t) { return LOAD(&t->size, RELAXED); }
 
 static bool find_closer_free_bucket(struct CHPTable *t, const u64 free_seg, u64 *free_buc, u64 *free_dist) {
-    u64 dist;
+    u64 dist, start;
 
 BEGIN:
     dist = MASK_RANGE - 1;
     for (u64 curr_buc = *free_buc - dist; curr_buc < *free_buc; curr_buc++, dist--) {
         u64 hop = LOAD(&t->buckets[curr_buc].hop, RELAXED);
-        while (hop > 0) {
+        if (hop > 0) {
             const u64 moved_offset = ffsll((i64) hop) - 1;
             const u64 index = curr_buc + moved_offset;
             if (index >= *free_buc) {
-                break;
+                continue;
             }
 
             const u64 curr_seg = index / SEGMENT_SIZE;
@@ -259,7 +257,7 @@ BEGIN:
     return false;
 }
 
-static void migrate_seg(struct CHPMap *m, struct CHPTable *t, struct CHPTable *nxt, u64 seg, node_eq eq) {
+static void migrate_seg(struct CHPTable *t, struct CHPTable *nxt, u64 seg, node_eq eq) {
     pthread_mutex_lock(&t->segments[seg].lock);
     u64 start = seg * SEGMENT_SIZE;
     for (u64 i = 0; i < SEGMENT_SIZE; i++) {
@@ -279,7 +277,7 @@ static void migrate_helper(struct CHPMap *m, struct CHPTable *t, struct CHPTable
             if (seg >= t->nsegs) {
                 break;
             }
-            migrate_seg(m, t, nxt, seg, eq);
+            migrate_seg(t, nxt, seg, eq);
         }
 
         if (FAS(&m->mthreads, 1, ACQ_REL) == 1) {
@@ -364,7 +362,7 @@ RETRY:
 
     if (res == n) { // Node was newly inserted
         u64 sz = hpt_size(t), cap = t->mask + 1;
-        if (cap - sz <= (cap >> 2) + (cap >> 3)) {
+        if (cap - sz <= (cap >> 2) + (cap >> 3) || sz >= cap) {
             struct CHPTable *nt = hpt_new(cap << 1);
             struct CHPTable *expect = NULL;
             STORE(&m->migrate_pos, 0, RELEASE);
@@ -427,7 +425,7 @@ RETRY:
 
     if (result == n) { // Node was newly inserted
         u64 sz = hpt_size(t), cap = t->mask + 1;
-        if (cap - sz <= (cap >> 2) + (cap >> 3)) {
+        if (cap - sz <= (cap >> 2) + (cap >> 3) || sz >= cap) {
             struct CHPTable *nt = hpt_new(cap << 1);
             struct CHPTable *expect = NULL;
             STORE(&m->migrate_pos, 0, RELEASE);

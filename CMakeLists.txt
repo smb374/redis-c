@@ -115,10 +115,14 @@ add_test(NAME thread_pool_test COMMAND thread_pool_test)
 add_executable(cskiplist_test tests/cskiplist_test.cpp)
 target_link_libraries(cskiplist_test PRIVATE common_lib gtest_main pthread atomic)
 add_test(NAME cskiplist_test COMMAND cskiplist_test)
-## hpmap_test
-add_executable(hpmap_test tests/hpmap_test.cpp)
-target_link_libraries(hpmap_test PRIVATE common_lib gtest_main pthread atomic)
-add_test(NAME hpmap_test COMMAND hpmap_test)
+## chpmap_test
+add_executable(chpmap_test tests/chpmap_test.cpp)
+target_link_libraries(chpmap_test PRIVATE common_lib gtest_main pthread atomic)
+add_test(NAME chpmap_test COMMAND chpmap_test)
+## shpmap_test
+add_executable(shpmap_test tests/shpmap_test.cpp)
+target_link_libraries(shpmap_test PRIVATE common_lib gtest_main)
+add_test(NAME shpmap_test COMMAND shpmap_test)
 
 set_tests_properties(
         ringbuf_test
@@ -131,12 +135,13 @@ set_tests_properties(
         cqueue_test
         thread_pool_test
         cskiplist_test
-        hpmap_test
+        chpmap_test
+        shpmap_test
         PROPERTIES LABELS "Unit"
 )
 
-# # Benchmarks
-## hpmap_bench
-add_executable(hpmap_bench bench/hpmap_bench.cpp)
-target_link_libraries(hpmap_bench PRIVATE common_lib benchmark::benchmark pthread)
+# Benchmarks
+## chpmap_bench
+add_executable(chpmap_bench bench/chpmap_bench.cpp)
+target_link_libraries(chpmap_bench PRIVATE common_lib benchmark::benchmark pthread)
 

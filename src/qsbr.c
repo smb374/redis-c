@@ -139,6 +139,7 @@ void qsbr_destroy() {
     cq_destroy(gc.curr);
     gc.prev = NULL;
     gc.curr = NULL;
+    pthread_mutex_destroy(&gc.lock);
     atomic_init(&gc.quiescent, 0);
     atomic_init(&gc.active, 0);
 }

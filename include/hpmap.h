@@ -14,6 +14,7 @@ extern "C" {
 #define MASK_RANGE 64
 #define INSERT_RANGE (1024 << 2)
 #define SEGMENT_SIZE 128
+#define PTR_TAG 0x8000000000000000
 
 struct BNode {
     u64 hcode;
@@ -28,7 +29,7 @@ typedef struct SHPTable SHPTable;
 struct SHPMap {
     struct SHPTable *active;
     u64 migrate_pos, size;
-    bool migrate_started, is_alloc;
+    bool is_alloc;
 };
 typedef struct SHPMap SHPMap;
 
@@ -45,6 +46,13 @@ struct CHPMap {
     bool is_alloc;
 };
 #endif
+
+struct SHPMap *shpm_new(struct SHPMap *m, size_t size);
+void shpm_destroy(struct SHPMap *m);
+struct BNode *shpm_lookup(struct SHPMap *m, struct BNode *k, node_eq eq);
+struct BNode *shpm_remove(struct SHPMap *m, struct BNode *k, node_eq eq);
+struct BNode *shpm_upsert(struct SHPMap *m, struct BNode *n, node_eq eq);
+bool shpm_foreach(struct SHPMap *m, bool (*f)(struct BNode *, void *), void *arg);
 
 struct CHPMap *chpm_new(struct CHPMap *m, size_t size);
 void chpm_destroy(struct CHPMap *m);

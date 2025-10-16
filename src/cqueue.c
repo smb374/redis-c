@@ -63,9 +63,13 @@ cnode *cq_pop(cqueue *q) {
          * that has been filled in. */
         return NULL;
 
-    q->tail = (q->tail + 1) % q->cap;
     size_t r = FAS(&q->count, 1, RELEASE);
-    assert(r > 0);
+    if (r == 0) {
+        // recover.
+        STORE(&q->count, 0, RELEASE);
+        return NULL;
+    }
+    q->tail = (q->tail + 1) % q->cap;
     return ret;
 }
 size_t cq_size(cqueue *q) { return LOAD(&q->count, RELAXED); }
