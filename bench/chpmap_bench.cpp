@@ -102,7 +102,7 @@ BENCHMARK_REGISTER_F(CHPMapFixture, BM_Insert)->ThreadRange(1, 8)->UseRealTime()
 
 // --- Pure Lookup Benchmark ---
 
-BENCHMARK_DEFINE_F(CHPMapFixture, BM_Lookup)(benchmark::State &state) {
+BENCHMARK_DEFINE_F(CHPMapFixture, BM_LookupExisting)(benchmark::State &state) {
     std::mt19937 rng(state.thread_index());
     std::uniform_int_distribution<uint64_t> dist(0, 499999);
 
@@ -114,7 +114,35 @@ BENCHMARK_DEFINE_F(CHPMapFixture, BM_Lookup)(benchmark::State &state) {
     }
     state.SetItemsProcessed(state.iterations());
 }
-BENCHMARK_REGISTER_F(CHPMapFixture, BM_Lookup)->ThreadRange(1, 8)->UseRealTime();
+BENCHMARK_REGISTER_F(CHPMapFixture, BM_LookupExisting)->ThreadRange(1, 8)->UseRealTime();
+
+BENCHMARK_DEFINE_F(CHPMapFixture, BM_LookupNonExisting)(benchmark::State &state) {
+    std::mt19937 rng(state.thread_index());
+    std::uniform_int_distribution<uint64_t> dist(500000, 999999);
+
+    for (auto _: state) {
+        uint64_t key = dist(rng);
+        TestEntry query{{int_hash_rapid(key)}, key, 0};
+        BNode *found = chpm_lookup(g_hpmap, &query.node, test_entry_eq);
+        benchmark::DoNotOptimize(found);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK_REGISTER_F(CHPMapFixture, BM_LookupNonExisting)->ThreadRange(1, 8)->UseRealTime();
+
+BENCHMARK_DEFINE_F(CHPMapFixture, BM_LookupMixed)(benchmark::State &state) {
+    std::mt19937 rng(state.thread_index());
+    std::uniform_int_distribution<uint64_t> dist(0, 999999);
+
+    for (auto _: state) {
+        uint64_t key = dist(rng);
+        TestEntry query{{int_hash_rapid(key)}, key, 0};
+        BNode *found = chpm_lookup(g_hpmap, &query.node, test_entry_eq);
+        benchmark::DoNotOptimize(found);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK_REGISTER_F(CHPMapFixture, BM_LookupMixed)->ThreadRange(1, 8)->UseRealTime();
 
 // --- Upsert Benchmark ---
 
