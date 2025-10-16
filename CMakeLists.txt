@@ -38,7 +38,6 @@ option(ENABLE_LOGGING "Enable Logging with logger" OFF)
 
 # Bundle all files into a lib except for executable files.
 add_library(common_lib STATIC
-        src/hashtable.c
         src/ringbuf.c
         src/connection.c
         src/utils.c
@@ -79,10 +78,6 @@ add_executable(kv_client tests/kv_client.cpp)
 add_executable(ringbuf_test tests/ringbuf_test.cpp)
 target_link_libraries(ringbuf_test PRIVATE common_lib gtest_main)
 add_test(NAME ringbuf_test COMMAND ringbuf_test)
-## hashtable_test
-add_executable(hashtable_test tests/hashtable_test.cpp)
-target_link_libraries(hashtable_test PRIVATE common_lib gtest_main)
-add_test(NAME hashtable_test COMMAND hashtable_test)
 ## parse_test
 add_executable(parse_test tests/parse_test.cpp)
 target_link_libraries(parse_test PRIVATE common_lib gtest_main)
@@ -126,7 +121,6 @@ add_test(NAME shpmap_test COMMAND shpmap_test)
 
 set_tests_properties(
         ringbuf_test
-        hashtable_test
         parse_test
         skiplist_test
         zset_test
