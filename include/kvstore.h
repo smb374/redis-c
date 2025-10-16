@@ -1,6 +1,4 @@
 //
-// Created by poyehchen on 9/30/25.
-//
 
 #ifndef KVSTORE_H
 #define KVSTORE_H
@@ -55,7 +53,7 @@ struct Entry {
     } val;
 };
 struct KVStore {
-    HPMap *store;
+    CHPMap *store;
     CSList expire;
     ThreadPool pool;
     ev_timer expire_w;

@@ -3,8 +3,8 @@
 #include <thread>
 #include <vector>
 
-#include "crystalline.h"
 #include "hpmap.h"
+#include "qsbr.h"
 #include "utils.h"
 
 
@@ -15,7 +15,7 @@ struct TestEntry {
     uint64_t value;
 };
 
-HPMap *map = nullptr;
+CHPMap *map = nullptr;
 // Equality function for the test entries
 static bool test_entry_eq(BNode *lhs, BNode *rhs) {
     if (!lhs || !rhs)
@@ -30,21 +30,23 @@ class HPMapTest : public ::testing::Test {
 protected:
     // Use a large enough table to avoid insertion failures due to capacity.
     // static const size_t MAP_SIZE = 1 << 16; // 65536
-    static const size_t MAP_SIZE = 1024;
+    static const size_t MAP_SIZE = 128;
     static const size_t NUM_THREADS = 8;
 
     void SetUp() override {
-        gc_init();
-        gc_reg();
-        map = hpm_new(nullptr, MAP_SIZE);
+        qsbr_init(65536);
+        qsbr_reg();
+        map = chpm_new(nullptr, MAP_SIZE);
         ASSERT_NE(map, nullptr);
     }
 
     void TearDown() override {
         // In a real scenario with GC, we'd need to make sure all nodes are freed.
         // For this test, we assume nodes are managed correctly and just destroy the table structure.
-        hpm_destroy(map);
-        gc_unreg();
+        // gc_force_cleanup();
+        chpm_destroy(map);
+        qsbr_unreg();
+        qsbr_destroy();
     }
 };
 
@@ -54,27 +56,28 @@ TEST_F(HPMapTest, SingleThreadInsertContainsRemove) {
     TestEntry query1{{int_hash_rapid(100)}, 100, 0};
 
     // Add
-    ASSERT_TRUE(hpm_add(map, &entry1->node, test_entry_eq));
-    ASSERT_TRUE(hpm_add(map, &entry2->node, test_entry_eq));
-    ASSERT_EQ(hpm_size(map), 2);
+    ASSERT_TRUE(chpm_add(map, &entry1->node, test_entry_eq));
+    ASSERT_TRUE(chpm_add(map, &entry2->node, test_entry_eq));
+    ASSERT_EQ(chpm_size(map), 2);
 
     // Add duplicate
-    ASSERT_FALSE(hpm_add(map, &entry1->node, test_entry_eq));
-    ASSERT_EQ(hpm_size(map), 2);
+    ASSERT_FALSE(chpm_add(map, &entry1->node, test_entry_eq));
+    ASSERT_EQ(chpm_size(map), 2);
 
     // Contains
-    ASSERT_TRUE(hpm_contains(map, &query1.node, test_entry_eq));
+    ASSERT_TRUE(chpm_contains(map, &query1.node, test_entry_eq));
 
     // Remove
-    ASSERT_TRUE(hpm_remove(map, &query1.node, test_entry_eq));
-    ASSERT_EQ(hpm_size(map), 1);
-    ASSERT_FALSE(hpm_contains(map, &query1.node, test_entry_eq));
+    ASSERT_TRUE(chpm_remove(map, &query1.node, test_entry_eq));
+    ASSERT_EQ(chpm_size(map), 1);
+    ASSERT_FALSE(chpm_contains(map, &query1.node, test_entry_eq));
 
     // Remove non-existent
-    ASSERT_FALSE(hpm_remove(map, &query1.node, test_entry_eq));
+    ASSERT_FALSE(chpm_remove(map, &query1.node, test_entry_eq));
 
     delete entry1;
     delete entry2;
+    qsbr_quiescent();
 }
 
 TEST_F(HPMapTest, MultiThreadAllNodesPresent) {
@@ -84,7 +87,7 @@ TEST_F(HPMapTest, MultiThreadAllNodesPresent) {
 
     for (size_t i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&, thread_id = i]() {
-            gc_reg();
+            qsbr_reg();
             uint64_t start_key = thread_id * keys_per_thread;
             uint64_t end_key = start_key + keys_per_thread;
 
@@ -92,9 +95,10 @@ TEST_F(HPMapTest, MultiThreadAllNodesPresent) {
                 // Keys are unique across all threads
                 auto *entry = new TestEntry{{int_hash_rapid(k)}, k, k};
                 all_entries[k] = entry;
-                ASSERT_TRUE(hpm_add(map, &entry->node, test_entry_eq));
+                ASSERT_TRUE(chpm_add(map, &entry->node, test_entry_eq));
             }
-            gc_unreg();
+            qsbr_quiescent();
+            qsbr_unreg();
         });
     }
 
@@ -103,11 +107,12 @@ TEST_F(HPMapTest, MultiThreadAllNodesPresent) {
     }
 
     // Verify all nodes are present
-    ASSERT_EQ(hpm_size(map), NUM_THREADS * keys_per_thread);
+    ASSERT_EQ(chpm_size(map), NUM_THREADS * keys_per_thread);
     for (uint64_t k = 0; k < NUM_THREADS * keys_per_thread; ++k) {
         TestEntry query{{int_hash_rapid(k)}, k, 0};
-        ASSERT_TRUE(hpm_contains(map, &query.node, test_entry_eq)) << "Key " << k << " was not found.";
+        ASSERT_TRUE(chpm_contains(map, &query.node, test_entry_eq)) << "Key " << k << " was not found.";
     }
+    qsbr_quiescent();
 
     // Cleanup
     for (auto *entry: all_entries) {
@@ -125,12 +130,12 @@ TEST_F(HPMapTest, MultiThreadMixedReadWrite) {
     for (int i = 0; i < key_space; ++i) {
         auto *entry = new TestEntry{{int_hash_rapid((uint64_t) i)}, (uint64_t) i, (uint64_t) i};
         initial_entries[i] = entry;
-        hpm_add(map, &entry->node, test_entry_eq);
+        chpm_add(map, &entry->node, test_entry_eq);
     }
 
     for (size_t i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&]() {
-            gc_reg();
+            qsbr_reg();
             std::mt19937 rng(std::hash<std::thread::id>{}(std::this_thread::get_id()));
             std::uniform_int_distribution<uint64_t> key_dist(0, key_space - 1);
             std::uniform_int_distribution<int> op_dist(0, 99);
@@ -141,23 +146,25 @@ TEST_F(HPMapTest, MultiThreadMixedReadWrite) {
 
                 int op = op_dist(rng);
                 if (op < 80) { // 80% Contains
-                    hpm_contains(map, &query.node, test_entry_eq);
+                    chpm_contains(map, &query.node, test_entry_eq);
                 } else if (op < 90) { // 10% Add (most will be duplicates)
                     auto *entry = new TestEntry{{int_hash_rapid(key)}, key, key + 1};
-                    if (!hpm_add(map, &entry->node, test_entry_eq)) {
+                    if (!chpm_add(map, &entry->node, test_entry_eq)) {
                         delete entry; // Add failed, key exists
                     }
                 } else { // 10% Remove
-                    hpm_remove(map, &query.node, test_entry_eq);
+                    chpm_remove(map, &query.node, test_entry_eq);
                 }
             }
-            gc_unreg();
+            qsbr_quiescent();
+            qsbr_unreg();
         });
     }
 
     for (auto &t: threads) {
         t.join();
     }
+    qsbr_quiescent();
 
     // Cleanup initial entries that might not have been removed
     for (auto *entry: initial_entries) {
@@ -170,26 +177,26 @@ TEST_F(HPMapTest, SingleThreadUpsert) {
     auto *entry2_new = new TestEntry{{int_hash_rapid(100)}, 100, 2000}; // Same key, new value
 
     // 1. Upsert a new key
-    BNode *result_node = hpm_upsert(map, &entry1->node, test_entry_eq);
+    BNode *result_node = chpm_upsert(map, &entry1->node, test_entry_eq);
     ASSERT_EQ(result_node, &entry1->node); // Should return the new node
-    ASSERT_EQ(hpm_size(map), 1);
+    ASSERT_EQ(chpm_size(map), 1);
 
     // Verify the content
-    BNode *found_node = hpm_contains(map, &entry1->node, test_entry_eq)
-                                ? &container_of(hpm_upsert(map, &entry1->node, test_entry_eq), TestEntry, node)->node
+    BNode *found_node = chpm_contains(map, &entry1->node, test_entry_eq)
+                                ? &container_of(chpm_upsert(map, &entry1->node, test_entry_eq), TestEntry, node)->node
                                 : nullptr;
     ASSERT_NE(found_node, nullptr);
     auto *found_entry = container_of(found_node, TestEntry, node);
     ASSERT_EQ(found_entry->value, 1000);
 
     // 2. Upsert the same key again
-    result_node = hpm_upsert(map, &entry2_new->node, test_entry_eq);
+    result_node = chpm_upsert(map, &entry2_new->node, test_entry_eq);
     ASSERT_EQ(result_node, &entry1->node); // Should return the ORIGINAL node
-    ASSERT_EQ(hpm_size(map), 1); // Size should not change
+    ASSERT_EQ(chpm_size(map), 1); // Size should not change
 
     // 3. Verify the value has not changed
-    found_node = hpm_contains(map, &entry1->node, test_entry_eq)
-                         ? &container_of(hpm_upsert(map, &entry1->node, test_entry_eq), TestEntry, node)->node
+    found_node = chpm_contains(map, &entry1->node, test_entry_eq)
+                         ? &container_of(chpm_upsert(map, &entry1->node, test_entry_eq), TestEntry, node)->node
                          : nullptr;
     ASSERT_NE(found_node, nullptr);
     found_entry = container_of(found_node, TestEntry, node);
@@ -197,4 +204,5 @@ TEST_F(HPMapTest, SingleThreadUpsert) {
 
     delete entry1;
     delete entry2_new;
+    qsbr_quiescent();
 }

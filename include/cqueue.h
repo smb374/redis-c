@@ -9,7 +9,9 @@ extern "C" {
 #include <stddef.h>
 
 // Forward declare for both C and C++
-struct cnode {};
+struct cnode {
+    char _pad[8];
+};
 typedef struct cnode cnode;
 struct cqueue;
 typedef struct cqueue cqueue;

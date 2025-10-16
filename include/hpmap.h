@@ -22,18 +22,39 @@ typedef struct BNode BNode;
 
 typedef bool (*node_eq)(struct BNode *, struct BNode *);
 
-struct HPMap;
-typedef struct HPMap HPMap;
+struct SHPTable;
+typedef struct SHPTable SHPTable;
 
-struct HPMap *hpm_new(struct HPMap *m, size_t size);
-void hpm_destroy(struct HPMap *m);
-bool hpm_contains(struct HPMap *m, struct BNode *k, node_eq eq);
-struct BNode *hpm_lookup(struct HPMap *m, struct BNode *k, node_eq eq);
-bool hpm_add(struct HPMap *m, struct BNode *n, node_eq eq);
-struct BNode *hpm_remove(struct HPMap *m, struct BNode *k, node_eq eq);
-u64 hpm_size(struct HPMap *m);
-struct BNode *hpm_upsert(struct HPMap *m, struct BNode *n, node_eq eq);
-bool hpm_foreach(struct HPMap *m, bool (*f)(struct BNode *, void *), void *arg, node_eq eq);
+struct SHPMap {
+    struct SHPTable *active;
+    u64 migrate_pos, size;
+    bool migrate_started, is_alloc;
+};
+typedef struct SHPMap SHPMap;
+
+struct CHPMap;
+typedef struct CHPMap CHPMap;
+
+#ifndef __cplusplus
+struct CHPTable;
+
+struct CHPMap {
+    _Atomic(struct CHPTable *) active; // GC
+    atomic_u64 migrate_pos, mthreads, size, epoch;
+    atomic_bool migrate_started;
+    bool is_alloc;
+};
+#endif
+
+struct CHPMap *chpm_new(struct CHPMap *m, size_t size);
+void chpm_destroy(struct CHPMap *m);
+bool chpm_contains(struct CHPMap *m, struct BNode *k, node_eq eq);
+struct BNode *chpm_lookup(struct CHPMap *m, struct BNode *k, node_eq eq);
+bool chpm_add(struct CHPMap *m, struct BNode *n, node_eq eq);
+struct BNode *chpm_remove(struct CHPMap *m, struct BNode *k, node_eq eq);
+u64 chpm_size(struct CHPMap *m);
+struct BNode *chpm_upsert(struct CHPMap *m, struct BNode *n, node_eq eq);
+bool chpm_foreach(struct CHPMap *m, bool (*f)(struct BNode *, void *), void *arg, node_eq eq);
 
 #ifdef __cplusplus
 }

@@ -50,8 +50,11 @@ add_library(common_lib STATIC
         src/cqueue.c
         src/thread_pool.c
         src/cskiplist.c
-        src/hpmap.c
-        src/crystalline.c
+        src/chpmap.c
+        src/shpmap.c
+        # src/crystalline.c
+        src/debra.c
+        src/qsbr.c
 )
 # include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(common_lib PUBLIC ev::ev)
@@ -119,9 +122,9 @@ add_executable(hpmap_test tests/hpmap_test.cpp)
 target_link_libraries(hpmap_test PRIVATE common_lib gtest_main pthread atomic)
 add_test(NAME hpmap_test COMMAND hpmap_test)
 ## crystalline_test
-add_executable(crystalline_test tests/crystalline_test.cpp)
-target_link_libraries(crystalline_test PRIVATE common_lib gtest gtest_main pthread)
-add_test(NAME crystalline_test COMMAND crystalline_test)
+# add_executable(crystalline_test tests/crystalline_test.cpp)
+# target_link_libraries(crystalline_test PRIVATE common_lib gtest gtest_main pthread)
+# add_test(NAME crystalline_test COMMAND crystalline_test)
 
 set_tests_properties(
         ringbuf_test
@@ -135,7 +138,7 @@ set_tests_properties(
         thread_pool_test
         cskiplist_test
         hpmap_test
-        crystalline_test
+        # crystalline_test
         PROPERTIES LABELS "Unit"
 )
 

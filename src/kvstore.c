@@ -13,8 +13,8 @@
 
 #include "connection.h"
 #include "cqueue.h"
-#include "crystalline.h"
 #include "cskiplist.h"
+#include "debra.h"
 #include "hpmap.h"
 #include "parse.h"
 #include "ringbuf.h"
@@ -141,7 +141,7 @@ KVStore *kv_new(KVStore *kv) {
     } else {
         kv->is_alloc = false;
     }
-    kv->store = hpm_new(NULL, 4096);
+    kv->store = chpm_new(NULL, 4096);
     pool_init(&kv->pool, kv_res_cb);
     csl_new(&kv->expire);
     return kv;
@@ -154,9 +154,9 @@ bool entry_catcher(BNode *node, void *arg) {
 }
 
 void kv_clear(KVStore *kv) {
-    hpm_foreach(kv->store, entry_catcher, NULL, entry_eq);
+    chpm_foreach(kv->store, entry_catcher, NULL, entry_eq);
     pool_destroy(&kv->pool);
-    hpm_destroy(kv->store);
+    chpm_destroy(kv->store);
     csl_destroy(&kv->expire);
     if (kv->is_alloc) {
         free(kv);
@@ -221,7 +221,7 @@ uint64_t kv_clean_expired(KVStore *kv) {
                 csl_update(&kv->expire, ent->expire_ms, ent);
                 expire_ms = ent->expire_ms;
             } else {
-                BNode *res = hpm_remove(kv->store, &ent->node, entry_eq);
+                BNode *res = chpm_remove(kv->store, &ent->node, entry_eq);
                 if (res) {
                     gc_retire_custom(ent, entry_clean);
                 }
@@ -244,14 +244,13 @@ void do_get(KVStore *kv, RingBuf *out, vstr *kstr) {
             .node.hcode = vstr_hash_rapid(kstr),
     };
 
-    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
+    BNode *node = chpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_nil(out);
         return;
     }
 
     Entry *ent = container_of(node, Entry, node);
-    ent = gc_protect((void **) &ent, 0);
     spin_rw_rlock(&ent->lock);
     if (ent->type != ENT_STR) {
         out_err(out, ERR_BAD_TYP, "not a string");
@@ -265,13 +264,12 @@ void do_get(KVStore *kv, RingBuf *out, vstr *kstr) {
 void do_set(KVStore *kv, RingBuf *out, vstr *kstr, vstr *vstr) {
     Entry *e = create_empty_entry(kstr);
 
-    BNode *node = hpm_upsert(kv->store, &e->node, entry_eq);
+    BNode *node = chpm_upsert(kv->store, &e->node, entry_eq);
     if (!node) {
         out_err(out, ERR_UNKNOWN, "store not initialized");
         gc_retire_custom(e, entry_clean);
     } else {
         Entry *found = container_of(node, Entry, node);
-        found = gc_protect((void **) &found, 0);
         spin_rw_wlock(&found->lock);
         switch (found->type) {
             case ENT_INIT:
@@ -299,7 +297,7 @@ void do_del(KVStore *kv, RingBuf *out, vstr *kstr) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_remove(kv->store, &key.node, entry_eq);
+    BNode *node = chpm_remove(kv->store, &key.node, entry_eq);
     if (!node) {
         out_int(out, 0);
     } else {
@@ -312,7 +310,6 @@ void do_del(KVStore *kv, RingBuf *out, vstr *kstr) {
 bool keys_cb(BNode *node, void *arg) {
     RingBuf *out = (RingBuf *) arg;
     Entry *ent = container_of(node, Entry, node);
-    ent = gc_protect((void **) &ent, 0);
     vstr *key;
     spin_rw_rlock(&ent->lock);
     key = container_of(node, Entry, node)->key;
@@ -323,8 +320,8 @@ bool keys_cb(BNode *node, void *arg) {
 
 // keys
 void do_keys(KVStore *kv, RingBuf *out) {
-    out_arr(out, (uint32_t) hpm_size(kv->store));
-    hpm_foreach(kv->store, keys_cb, out, entry_eq);
+    out_arr(out, (uint32_t) chpm_size(kv->store));
+    chpm_foreach(kv->store, keys_cb, out, entry_eq);
 }
 
 // zadd key score name
@@ -332,14 +329,13 @@ void do_zadd(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *na
     bool added = false;
     Entry *e = create_empty_entry(kstr);
 
-    BNode *node = hpm_upsert(kv->store, &e->node, entry_eq);
+    BNode *node = chpm_upsert(kv->store, &e->node, entry_eq);
     if (!node) {
         out_err(out, ERR_UNKNOWN, "store not initialized");
         gc_retire_custom(e, entry_clean);
         return;
     } else {
         Entry *found = container_of(node, Entry, node);
-        found = gc_protect((void **) &found, 0);
         spin_rw_wlock(&found->lock);
         switch (found->type) {
             case ENT_INIT:
@@ -368,12 +364,11 @@ void do_zrem(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
+    BNode *node = chpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_int(out, 0);
     } else {
         Entry *ent = container_of(node, Entry, node);
-        ent = gc_protect((void **) &ent, 0);
         spin_rw_wlock(&ent->lock);
         if (ent->type != ENT_ZSET) {
             spin_rw_wunlock(&ent->lock);
@@ -395,12 +390,11 @@ void do_zscore(KVStore *kv, RingBuf *out, vstr *kstr, vstr *name) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
+    BNode *node = chpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_nil(out);
     } else {
         Entry *ent = container_of(node, Entry, node);
-        ent = gc_protect((void **) &ent, 0);
         spin_rw_rlock(&ent->lock);
         if (ent->type != ENT_ZSET) {
             spin_rw_runlock(&ent->lock);
@@ -424,14 +418,13 @@ void do_zquery(KVStore *kv, RingBuf *out, vstr *kstr, const double score, vstr *
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
+    BNode *node = chpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_arr(out, 0);
         return;
     }
 
     Entry *ent = container_of(node, Entry, node);
-    ent = gc_protect((void **) &ent, 0);
     spin_rw_rlock(&ent->lock);
     if (ent->type != ENT_ZSET) {
         spin_rw_runlock(&ent->lock);
@@ -469,14 +462,13 @@ void do_pttl(KVStore *kv, RingBuf *out, vstr *kstr) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
+    BNode *node = chpm_lookup(kv->store, &key.node, entry_eq);
     if (!node) {
         out_int(out, -2);
         return;
     }
 
     const Entry *ent = container_of(node, Entry, node);
-    ent = gc_protect((void **) &ent, 0);
     if (!cskey_cmp(ent->expire_ms, NOEXPIRE)) {
         out_int(out, -1);
         return;
@@ -493,10 +485,9 @@ void do_pexpire(KVStore *kv, RingBuf *out, vstr *kstr, int64_t ttl) {
             .key = kstr,
             .node.hcode = vstr_hash_rapid(kstr),
     };
-    BNode *node = hpm_lookup(kv->store, &key.node, entry_eq);
+    BNode *node = chpm_lookup(kv->store, &key.node, entry_eq);
     if (node) {
         Entry *ent = container_of(node, Entry, node);
-        ent = gc_protect((void **) &ent, 0);
         kv_set_ttl(kv, ent, ttl);
     }
     out_int(out, node ? 1 : 0);

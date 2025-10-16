@@ -3,11 +3,9 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include "crystalline.h"
 
-extern "C" {
 #include "cskiplist.h"
-}
+#include "debra.h"
 
 // Define the global QSBR instance for the test executable
 

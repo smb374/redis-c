@@ -8,7 +8,7 @@
 #include <strings.h>
 #include <time.h>
 
-#include "crystalline.h"
+#include "debra.h"
 #include "utils.h"
 
 // Should work on 8-byte aligned & above pointers on 64-bit machines
@@ -54,14 +54,12 @@ RETRY:
         pnext = LOAD(&pred->next[i], memory_order_acquire);
         if (is_marked(pnext))
             goto RETRY;
-        pnext = gc_protect((void **) &pnext, 0);
         for (succ = pnext;; succ = snext) {
             for (;;) {
                 snext = LOAD(&succ->next[i], memory_order_acquire);
                 if (!is_marked(snext))
                     break;
                 succ = untag_ptr(snext);
-                succ = gc_protect((void **) &succ, 0);
             }
             if (cskey_cmp(succ->key, key) >= 0)
                 break;
