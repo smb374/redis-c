@@ -63,20 +63,10 @@ static struct CHPTable *hpt_new(size_t size) {
     t->buckets = (struct Bucket *) (t->data + sizeof(struct Segment) * nsegs);
     t->mask = cap - 1;
     t->nsegs = nsegs;
-    t->next = NULL;
 
     for (u64 i = 0; i < t->nsegs; i++) {
-        STORE(&t->segments[i].ts, 0, RELAXED);
         pthread_mutex_init(&t->segments[i].lock, NULL);
     }
-
-    for (u64 i = 0; i < buckets; i++) {
-        STORE(&t->buckets[i].hop, 0, RELAXED);
-        STORE(&t->buckets[i].in_use, false, RELAXED);
-        STORE(&t->buckets[i].node, NULL, RELAXED);
-    }
-
-    STORE(&t->size, 0, RELAXED);
 
     return t;
 }
