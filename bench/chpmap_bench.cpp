@@ -62,7 +62,6 @@ public:
 
     void TearDown(const ::benchmark::State &state) override {
         qsbr_quiescent();
-        qsbr_unreg();
 
         if (g_threads_finished.fetch_add(1, std::memory_order_acq_rel) + 1 == state.threads()) {
             // Last thread out cleans up all resources
@@ -70,6 +69,9 @@ public:
             g_hpmap = nullptr;
             g_initialized.store(false, std::memory_order_release);
             qsbr_destroy();
+            qsbr_unreg();
+        } else {
+            qsbr_unreg();
         }
     }
 };
