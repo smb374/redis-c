@@ -52,6 +52,7 @@ add_library(common_lib STATIC
         src/chpmap.c
         src/shpmap.c
         src/qsbr.c
+        src/leapfrog.c
 )
 # include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(common_lib PUBLIC ev::ev)
@@ -119,6 +120,11 @@ add_executable(shpmap_test tests/shpmap_test.cpp)
 target_link_libraries(shpmap_test PRIVATE common_lib gtest_main)
 add_test(NAME shpmap_test COMMAND shpmap_test)
 
+## leapfrog_test
+add_executable(leapfrog_test tests/leapfrog_test.cpp)
+target_link_libraries(leapfrog_test PRIVATE common_lib gtest_main)
+add_test(NAME leapfrog_test COMMAND leapfrog_test)
+
 set_tests_properties(
         ringbuf_test
         parse_test
@@ -131,6 +137,7 @@ set_tests_properties(
         cskiplist_test
         chpmap_test
         shpmap_test
+        leapfrog_test
         PROPERTIES LABELS "Unit"
 )
 

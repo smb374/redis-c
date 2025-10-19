@@ -27,6 +27,14 @@ typedef int64_t i64;
 #define MIN(x, y) ((y) ^ (((x) ^ (y)) & -((x) < (y))))
 #define MAX(x, y) ((x) ^ (((x) ^ (y)) & -((x) < (y))))
 
+// Should work on 8-byte aligned & above pointers on 64-bit machines
+#define TAG_MASK 0x7
+#define PTR_MASK ~TAG_MASK
+
+static bool is_marked(void *ptr) { return ((uintptr_t) ptr & TAG_MASK) != 0; }
+static void *tag_ptr(void *ptr, int tag) { return (void *) (((uintptr_t) ptr & PTR_MASK) | (tag & TAG_MASK)); }
+static void *untag_ptr(void *ptr) { return (void *) ((uintptr_t) ptr & PTR_MASK); }
+
 struct vstr {
     uint32_t len;
     char dat[];

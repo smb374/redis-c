@@ -4,7 +4,6 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -145,7 +144,8 @@ static struct BNode *hpt_upsert(struct CHPTable *t, struct BNode *n, node_eq eq)
         struct BNode *curr_node = LOAD(&t->buckets[curr_idx].node, RELAXED);
         if (curr_node && eq(curr_node, n)) {
             pthread_mutex_unlock(&t->segments[o_seg].lock);
-            return (struct BNode *) ((uintptr_t) curr_node | PTR_TAG); // Key already exists, return existing node
+            // return (struct BNode *) ((uintptr_t) curr_node | PTR_TAG); // Key already exists, return existing node
+            return tag_ptr(curr_node, 1); // Key already exists, return existing node
         }
         hop &= ~(1ULL << lowest_set);
     }
@@ -428,7 +428,7 @@ RETRY:
         FAA(&m->epoch, 1, RELEASE);
         qsbr_quiescent();
     }
-    result = (struct BNode *) ((uintptr_t) result & ~PTR_TAG);
+    result = untag_ptr(result);
     return result;
 }
 

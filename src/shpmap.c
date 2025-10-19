@@ -88,7 +88,7 @@ static struct BNode *hpt_upsert(struct SHPTable *t, struct BNode *n, node_eq eq)
         u64 curr_idx = o_buc + lowest_set;
         struct BNode *curr_node = t->buckets[curr_idx].node;
         if (curr_node && eq(curr_node, n)) {
-            return (struct BNode *) ((uintptr_t) curr_node | PTR_TAG); // Key already exists, return existing node
+            return tag_ptr(curr_node, 1); // Key already exists, return existing node
         }
         hop &= ~(1ULL << lowest_set);
     }
@@ -280,8 +280,7 @@ struct BNode *shpm_upsert(struct SHPMap *m, struct BNode *n, node_eq eq) {
         }
     }
 
-
-    res = (struct BNode *) ((uintptr_t) res & ~PTR_TAG);
+    res = untag_ptr(res);
     return res;
 }
 

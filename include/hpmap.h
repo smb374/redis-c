@@ -14,7 +14,6 @@ extern "C" {
 #define MASK_RANGE 64
 #define INSERT_RANGE (1024 << 2)
 #define SEGMENT_SIZE 128
-#define PTR_TAG 0x8000000000000000
 
 struct BNode {
     u64 hcode;
