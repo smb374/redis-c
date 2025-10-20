@@ -8,18 +8,18 @@
 
 #define INITIAL_SIZE 8
 
-struct LFCell {
+struct Cell {
     u64 hcode;
     struct LFNode *node;
 };
 
-struct LFCellGroup {
+struct CellGroup {
     u8 deltas[8];
-    struct LFCell cells[4];
+    struct Cell cells[4];
 };
 
 struct LFTable {
-    struct LFCellGroup *groups;
+    struct CellGroup *groups;
     u64 mask;
 };
 
@@ -27,7 +27,7 @@ static struct LFTable *lft_new(size_t size) {
     size_t cap = next_pow2(size);
     struct LFTable *t = calloc(1, sizeof(struct LFTable));
 
-    t->groups = calloc(cap >> 2, sizeof(struct LFCellGroup));
+    t->groups = calloc(cap >> 2, sizeof(struct CellGroup));
     t->mask = cap - 1;
 
     return t;
@@ -42,8 +42,8 @@ static void lft_destroy(struct LFTable *t) {
 
 static struct LFNode *lft_upsert(struct LFTable *t, struct LFNode *n, u64 *overflow_idx, lfn_eq eq) {
     u64 idx = n->hcode;
-    struct LFCellGroup *grp = &t->groups[(idx & t->mask) >> 2];
-    struct LFCell *cell = &grp->cells[(idx & 3)];
+    struct CellGroup *grp = &t->groups[(idx & t->mask) >> 2];
+    struct Cell *cell = &grp->cells[(idx & 3)];
     // Check home bucket first
     if (!cell->hcode) {
         // Vacant, insert
@@ -90,8 +90,8 @@ static struct LFNode *lft_upsert(struct LFTable *t, struct LFNode *n, u64 *overf
 
 static struct LFNode *lft_lookup(struct LFTable *t, struct LFNode *k, lfn_eq eq) {
     u64 idx = k->hcode;
-    struct LFCellGroup *grp = &t->groups[(idx & t->mask) >> 2];
-    struct LFCell *cell = &grp->cells[(idx & 3)];
+    struct CellGroup *grp = &t->groups[(idx & t->mask) >> 2];
+    struct Cell *cell = &grp->cells[(idx & 3)];
     if (cell->hcode == k->hcode && eq(cell->node, k)) {
         return cell->node;
     }
@@ -113,8 +113,8 @@ static struct LFNode *lft_lookup(struct LFTable *t, struct LFNode *k, lfn_eq eq)
 
 static struct LFNode *lft_remove(struct LFTable *t, struct LFNode *k, lfn_eq eq) {
     u64 idx = k->hcode;
-    struct LFCellGroup *grp = &t->groups[(idx & t->mask) >> 2];
-    struct LFCell *cell = &grp->cells[(idx & 3)];
+    struct CellGroup *grp = &t->groups[(idx & t->mask) >> 2];
+    struct Cell *cell = &grp->cells[(idx & 3)];
     if (cell->hcode == k->hcode && eq(cell->node, k)) {
         struct LFNode *res = cell->node;
         cell->node = NULL;
@@ -141,12 +141,12 @@ static struct LFNode *lft_remove(struct LFTable *t, struct LFNode *k, lfn_eq eq)
 static bool lfm_try_migrate(struct LFMap *m, u64 size, lfn_eq eq) {
     struct LFTable *t = m->active;
     struct LFTable *nt = lft_new(size);
-    struct LFCellGroup *groups = t->groups;
+    struct CellGroup *groups = t->groups;
     u64 s_size = t->mask + 1;
 
     for (u64 i = 0; i < s_size; i++) {
-        struct LFCellGroup *grp = &groups[i >> 2];
-        struct LFCell *cell = &grp->cells[i & 3];
+        struct CellGroup *grp = &groups[i >> 2];
+        struct Cell *cell = &grp->cells[i & 3];
         if (cell->node) {
             u64 overflow_idx;
             if (!lft_upsert(nt, cell->node, &overflow_idx, eq)) {
@@ -165,8 +165,8 @@ static void lfm_migrate(struct LFMap *m, u64 overflow_idx, lfn_eq eq) {
     u64 idx = overflow_idx - LINEAR_SEARCH_LIMIT;
     u64 in_use = 0;
     for (u64 remain = LINEAR_SEARCH_LIMIT; remain > 0; remain--) {
-        struct LFCellGroup *grp = &t->groups[(idx & t->mask) >> 2];
-        struct LFCell *cell = &grp->cells[(idx & 3)];
+        struct CellGroup *grp = &t->groups[(idx & t->mask) >> 2];
+        struct Cell *cell = &grp->cells[(idx & 3)];
         if (cell->node) {
             in_use++;
         }
