@@ -6,8 +6,6 @@
 
 #include "utils.h"
 
-#define INITIAL_SIZE 8
-
 struct Cell {
     u64 hcode;
     struct LFNode *node;
@@ -175,7 +173,7 @@ static void lfm_migrate(struct LFMap *m, u64 overflow_idx, lfn_eq eq) {
 
     float ratio = (float) in_use / LINEAR_SEARCH_LIMIT;
     float estimate = (float) (t->mask + 1) * ratio;
-    u64 next_size = MAX(INITIAL_SIZE, next_pow2((u64) estimate * 2ULL));
+    u64 next_size = MAX(MIN_SIZE, next_pow2((u64) estimate * 2ULL));
     for (;;) {
         if (lfm_try_migrate(m, next_size, eq)) {
             break;

@@ -11,6 +11,7 @@ extern "C" {
 #include "utils.h"
 
 #define LINEAR_SEARCH_LIMIT 128
+#define MIN_SIZE 8
 
 struct LFNode {
     u64 hcode;
@@ -30,10 +31,16 @@ struct LFMap {
 };
 
 struct CLFMap;
+struct Migration;
 #ifndef __cplusplus
+#include <pthread.h>
 #include <stdatomic.h>
+
 struct CLFMap {
     _Atomic(struct CLFTable *) active;
+    _Atomic(struct Migration *) job;
+    pthread_mutex_t mlock;
+    atomic_u64 epoch;
     atomic_size_t size;
     bool is_alloc;
 };

@@ -1,11 +1,15 @@
 #include "leapfrog.h"
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "qsbr.h"
 #include "utils.h"
+
+#define MIGRATION_UNIT 32
 
 struct Cell {
     atomic_u64 hcode;
@@ -21,6 +25,14 @@ struct CellGroup {
 struct CLFTable {
     struct CellGroup *groups;
     u64 mask;
+};
+
+typedef _Atomic(i64) atomic_i64;
+
+struct Migration {
+    struct CLFTable *src, *dst;
+    atomic_u64 migrate_pos, threads;
+    atomic_bool overflowed;
 };
 
 static struct CLFTable *clft_new(size_t size) {
@@ -201,4 +213,123 @@ static struct LFNode *clft_upsert(struct CLFTable *t, struct LFNode *n, u64 *ove
             return NULL;
         }
     }
+}
+
+// Use DCLI to have only one thread start the migration
+static void clfm_begin_migrate(struct CLFMap *m, struct CLFTable *src, size_t next_size) {
+    struct Migration *job = LOAD(&m->job, RELAXED);
+    if (job) {
+        return;
+    } else {
+        pthread_mutex_lock(&m->mlock);
+        job = LOAD(&m->job, RELAXED);
+        if (!job) {
+            job = qsbr_calloc(1, sizeof(struct Migration));
+            job->src = src;
+            job->dst = clft_new(next_size);
+            job->migrate_pos = 0;
+            STORE(&m->job, job, RELEASE);
+        }
+        pthread_mutex_unlock(&m->mlock);
+    }
+}
+
+// Estimates the rough size of the next table.
+static u64 clfm_estimate_next_size(struct CLFMap *m, struct CLFTable *src, const u64 overflow_idx) {
+    const u64 mask = src->mask;
+    u64 idx = overflow_idx - LINEAR_SEARCH_LIMIT;
+    u64 in_use = 0;
+    for (u64 remain = LINEAR_SEARCH_LIMIT; remain > 0; remain--) {
+        struct CellGroup *grp = &src->groups[idx >> 2];
+        struct Cell *cell = &grp->cells[(idx & 3)];
+        struct LFNode *node = LOAD(&cell->node, RELAXED);
+        if (node) {
+            in_use++;
+        }
+        idx++;
+    }
+    float ratio = ((float) in_use) / LINEAR_SEARCH_LIMIT;
+    float estimate = ((float) (mask + 1)) * ratio;
+    // MIN_SIZE = 8
+    u64 next_size = MAX(MIN_SIZE, (u64) (estimate * 2));
+    return next_size;
+}
+
+// Spin wait until one of m->job or m->epoch changes
+static inline void spin_wait(struct CLFMap *m, struct Migration *job) {
+    u64 epoch = LOAD(&m->epoch, ACQUIRE);
+    int spin = 0;
+    // Spin loop to wait:
+    // - m->job changes (whether it ends or another started because of an overflow)
+    // - m->epoch changes (migration successes and a write commits)
+    while (job == LOAD(&m->job, ACQUIRE) && epoch == LOAD(&m->epoch, ACQUIRE)) {
+        if (spin < 5) {
+#if defined(__i386__) || defined(__x86_64__)
+            __asm__ __volatile__("pause");
+#elif defined(__aarch64__) || defined(__arm__)
+            __asm__ __volatile__("yield");
+#endif
+        } else {
+            int sleep_duration = spin - 5 < 9 ? spin - 5 : 9;
+            usleep(1 << sleep_duration);
+        }
+        spin++;
+    }
+}
+
+static bool clfm_migrate_range(struct Migration *job, const u64 start, lfn_eq eq) {
+    struct CLFTable *src = job->src, *dst = job->dst;
+    struct CellGroup *grp;
+    struct Cell *cell;
+    const u64 mask = job->src->mask;
+    for (u64 i = 0; i < MIGRATION_UNIT && start + i <= mask; i++) {
+        u64 idx = start + i;
+        grp = &src->groups[idx >> 2];
+        cell = &grp->cells[(idx & 3)];
+        struct LFNode *node = LOAD(&cell->node, ACQUIRE);
+        if (node) {
+            // We don't actually use overflow since we're already in a migration
+            // Just double the size of dst and restart.
+            u64 overflow;
+            if (!clft_upsert(dst, node, &overflow, eq)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// If the migration failed then the helper don't set m->active, the caller needs to check this.
+static void clfm_migrate_helper(struct CLFMap *m, struct Migration *job, lfn_eq eq) {
+    struct CLFTable *src = job->src, *dst = job->dst;
+    FAA(&job->threads, 1, ACQ_REL);
+    do {
+        // MIGRATION_UNIT is small so we can tolerate some excess writes to the new table if
+        // an overflow is reported in other migration unit.
+        u64 start = FAA(&job->migrate_pos, MIGRATION_UNIT, ACQ_REL);
+        if (start > src->mask) {
+            break;
+        }
+        if (!clfm_migrate_range(job, start, eq)) {
+            STORE(&job->overflowed, true, RELEASE);
+            break;
+        }
+    } while (!LOAD(&job->overflowed, ACQUIRE));
+
+    if (FAA(&job->threads, -1, ACQ_REL) == 1) {
+        if (LOAD(&job->overflowed, ACQUIRE)) {
+            STORE(&m->job, NULL, RELEASE);
+            qsbr_retire(job, NULL);
+            return;
+        }
+        STORE(&m->active, dst, RELEASE);
+        qsbr_retire(src, NULL);
+        // Retire job at last since the spin wait loop needs to wait at least
+        // m->active changes if the migration is succeessed.
+        STORE(&m->job, NULL, RELEASE);
+        qsbr_retire(job, NULL);
+        return;
+    }
+
+    spin_wait(m, job);
 }
