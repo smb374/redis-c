@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -25,6 +26,7 @@ struct CellGroup {
 struct CLFTable {
     struct CellGroup *groups;
     u64 mask;
+    atomic_u64 size;
 };
 
 typedef _Atomic(i64) atomic_i64;
@@ -32,7 +34,8 @@ typedef _Atomic(i64) atomic_i64;
 struct Migration {
     struct CLFTable *src, *dst;
     atomic_u64 migrate_pos, threads;
-    atomic_bool overflowed;
+    atomic_int migrate_res, local_res;
+    u64 start_epoch;
 };
 
 static struct CLFTable *clft_new(size_t size) {
@@ -70,7 +73,7 @@ static struct Cell *clft_find_cell(struct CLFTable *t, struct LFNode *k, lfn_eq 
         u64 idx = home_idx;
         struct CellGroup *grp = &t->groups[idx >> 2];
         struct Cell *cell = &grp->cells[(idx & 3)];
-        u64 phash = LOAD(&cell->hcode, RELAXED);
+        u64 phash = LOAD(&cell->hcode, ACQUIRE);
         struct LFNode *node = LOAD(&cell->node, ACQUIRE);
         if (phash == k->hcode && eq(node, k)) {
             return cell;
@@ -80,17 +83,17 @@ static struct Cell *clft_find_cell(struct CLFTable *t, struct LFNode *k, lfn_eq 
         }
         // We don't need to check !phash in the probing seq since
         // only written cells exists in the chain and it'll stop when delta=0
-        u8 delta = LOAD(&grp->deltas[(idx & 3)], RELAXED);
+        u8 delta = LOAD(&grp->deltas[(idx & 3)], ACQUIRE);
         while (delta) {
             idx = (idx + delta) & mask;
             grp = &t->groups[idx >> 2];
             cell = &grp->cells[(idx & 3)];
-            phash = LOAD(&cell->hcode, RELAXED);
+            phash = LOAD(&cell->hcode, ACQUIRE);
             node = LOAD(&cell->node, ACQUIRE);
             if (phash == k->hcode && eq(node, k)) {
                 return cell;
             }
-            delta = LOAD(&grp->deltas[(idx & 3) + 4], RELAXED);
+            delta = LOAD(&grp->deltas[(idx & 3) + 4], ACQUIRE);
         }
     CHECK:
         epoch_after = LOAD(&home_grp->epoch, ACQUIRE);
@@ -126,6 +129,7 @@ static struct LFNode *clft_remove(struct CLFTable *t, struct LFNode *k, lfn_eq e
         }
         if (CMPXCHG(&cell->node, &expect, NULL, ACQ_REL, ACQUIRE)) {
             // Success
+            FAA(&t->size, -1, RELEASE);
             return expect;
         }
     }
@@ -136,13 +140,14 @@ static struct LFNode *clft_upsert(struct CLFTable *t, struct LFNode *n, u64 *ove
     u64 home_idx = hash & mask, idx = home_idx;
     struct CellGroup *home_grp = &t->groups[idx >> 2], *grp = home_grp;
     struct Cell *cell = &grp->cells[(idx & 3)];
-    u64 phash = LOAD(&cell->hcode, RELAXED);
+    u64 phash = LOAD(&cell->hcode, ACQUIRE);
     if (!phash) {
         // Vacant slot, try to reserve
         if (CMPXCHG(&cell->hcode, &phash, hash, ACQ_REL, ACQUIRE)) {
             // Reserve success, write node & increase epoch
             STORE(&cell->node, n, RELEASE);
             FAA(&home_grp->epoch, 1, RELEASE);
+            FAA(&t->size, 1, RELEASE);
             return n;
         }
     }
@@ -158,12 +163,12 @@ static struct LFNode *clft_upsert(struct CLFTable *t, struct LFNode *n, u64 *ove
     FOLLOW:
         prev_link = &grp->deltas[(idx & 3) + link_level];
         link_level = 4;
-        u8 delta = LOAD(prev_link, RELAXED);
+        u8 delta = LOAD(prev_link, ACQUIRE);
         if (delta) {
             idx += delta;
-            grp = &t->groups[idx >> 2];
+            grp = &t->groups[(idx & mask) >> 2];
             cell = &grp->cells[(idx & 3)];
-            phash = LOAD(&cell->hcode, RELAXED);
+            phash = LOAD(&cell->hcode, ACQUIRE);
             if (!phash) {
                 // Wait phash to be seen
                 do {
@@ -180,15 +185,16 @@ static struct LFNode *clft_upsert(struct CLFTable *t, struct LFNode *n, u64 *ove
             u64 remain = MIN(max_idx - idx, LINEAR_SEARCH_LIMIT);
             while (remain--) {
                 idx++;
-                grp = &t->groups[idx >> 2];
+                grp = &t->groups[(idx & mask) >> 2];
                 cell = &grp->cells[(idx & 3)];
-                phash = LOAD(&cell->hcode, RELAXED);
+                phash = LOAD(&cell->hcode, ACQUIRE);
                 if (!phash) {
                     // Vacant slot, try to reserve
                     if (CMPXCHG(&cell->hcode, &phash, hash, ACQ_REL, ACQUIRE)) {
                         // Reserve success, write node & increase epoch
                         STORE(&cell->node, n, RELEASE);
                         FAA(&home_grp->epoch, 1, RELEASE);
+                        FAA(&t->size, 1, RELEASE);
                         // Link delta
                         u8 delta = idx - prev_idx;
                         STORE(prev_link, delta, RELEASE);
@@ -215,19 +221,29 @@ static struct LFNode *clft_upsert(struct CLFTable *t, struct LFNode *n, u64 *ove
     }
 }
 
+// Use bitmask OR to set result, s.t. overflow have a higher priority then late write.
+enum {
+    M_RUNNING = 0,
+    M_OK = 1,
+    M_LATEWRITE = 2,
+    M_OVERFLOW = 4,
+};
+
 // Use DCLI to have only one thread start the migration
 static void clfm_begin_migrate(struct CLFMap *m, struct CLFTable *src, size_t next_size) {
-    struct Migration *job = LOAD(&m->job, RELAXED);
+    struct Migration *job = LOAD(&m->job, ACQUIRE);
     if (job) {
         return;
     } else {
         pthread_mutex_lock(&m->mlock);
-        job = LOAD(&m->job, RELAXED);
+        job = LOAD(&m->job, ACQUIRE);
         if (!job) {
             job = qsbr_calloc(1, sizeof(struct Migration));
             job->src = src;
             job->dst = clft_new(next_size);
             job->migrate_pos = 0;
+            job->migrate_res = job->local_res = M_RUNNING;
+            job->start_epoch = LOAD(&m->epoch, ACQUIRE);
             STORE(&m->job, job, RELEASE);
         }
         pthread_mutex_unlock(&m->mlock);
@@ -240,9 +256,9 @@ static u64 clfm_estimate_next_size(struct CLFMap *m, struct CLFTable *src, const
     u64 idx = overflow_idx - LINEAR_SEARCH_LIMIT;
     u64 in_use = 0;
     for (u64 remain = LINEAR_SEARCH_LIMIT; remain > 0; remain--) {
-        struct CellGroup *grp = &src->groups[idx >> 2];
+        struct CellGroup *grp = &src->groups[(idx & mask) >> 2];
         struct Cell *cell = &grp->cells[(idx & 3)];
-        struct LFNode *node = LOAD(&cell->node, RELAXED);
+        struct LFNode *node = LOAD(&cell->node, ACQUIRE);
         if (node) {
             in_use++;
         }
@@ -255,52 +271,53 @@ static u64 clfm_estimate_next_size(struct CLFMap *m, struct CLFTable *src, const
     return next_size;
 }
 
-// Spin wait until one of m->job or m->epoch changes
-static inline void spin_wait(struct CLFMap *m, struct Migration *job) {
-    u64 epoch = LOAD(&m->epoch, ACQUIRE);
-    int spin = 0;
-    // Spin loop to wait:
-    // - m->job changes (whether it ends or another started because of an overflow)
-    // - m->epoch changes (migration successes and a write commits)
-    while (job == LOAD(&m->job, ACQUIRE) && epoch == LOAD(&m->epoch, ACQUIRE)) {
-        if (spin < 5) {
+static inline void spin_backoff(int spin) {
+    if (spin < 5) {
 #if defined(__i386__) || defined(__x86_64__)
-            __asm__ __volatile__("pause");
+        __asm__ __volatile__("pause");
 #elif defined(__aarch64__) || defined(__arm__)
-            __asm__ __volatile__("yield");
+        __asm__ __volatile__("yield");
 #endif
-        } else {
-            int sleep_duration = spin - 5 < 9 ? spin - 5 : 9;
-            usleep(1 << sleep_duration);
-        }
-        spin++;
+    } else {
+        int sleep_duration = spin - 5 < 9 ? spin - 5 : 9;
+        usleep(1 << sleep_duration);
     }
 }
 
-static bool clfm_migrate_range(struct Migration *job, const u64 start, lfn_eq eq) {
+static int clfm_migrate_range(struct Migration *job, const u64 start, lfn_eq eq) {
     struct CLFTable *src = job->src, *dst = job->dst;
     struct CellGroup *grp;
     struct Cell *cell;
     const u64 mask = job->src->mask;
-    for (u64 i = 0; i < MIGRATION_UNIT && start + i <= mask; i++) {
+    for (u64 i = 0; i < MIGRATION_UNIT && start + i <= mask; i += 4) {
         u64 idx = start + i;
         grp = &src->groups[idx >> 2];
-        cell = &grp->cells[(idx & 3)];
-        struct LFNode *node = LOAD(&cell->node, ACQUIRE);
-        if (node) {
-            // We don't actually use overflow since we're already in a migration
-            // Just double the size of dst and restart.
-            u64 overflow;
-            if (!clft_upsert(dst, node, &overflow, eq)) {
-                return false;
+        u64 epoch = LOAD(&grp->epoch, ACQUIRE);
+        for (int j = 0; j < 4; j++) {
+            cell = &grp->cells[j];
+            struct LFNode *node = LOAD(&cell->node, ACQUIRE);
+            if (node) {
+                // We don't actually use overflow since we're already in a migration
+                // Just double the size of dst and restart.
+                u64 overflow;
+                struct LFNode *res = clft_upsert(dst, node, &overflow, eq);
+                if (!res) {
+                    return M_OVERFLOW;
+                }
             }
         }
+        // Check epoch for the group to fast detect late writes.
+        if (epoch != LOAD(&grp->epoch, ACQUIRE)) {
+            logger(stderr, "INFO", "[migrate_seg] Catched late write\n");
+            return M_LATEWRITE;
+        }
     }
-    return true;
+    return M_OK;
 }
 
-// If the migration failed then the helper don't set m->active, the caller needs to check this.
-static void clfm_migrate_helper(struct CLFMap *m, struct Migration *job, lfn_eq eq) {
+
+static int clfm_migrate_helper(struct CLFMap *m, struct Migration *job, lfn_eq eq) {
+    int spin = 0;
     struct CLFTable *src = job->src, *dst = job->dst;
     FAA(&job->threads, 1, ACQ_REL);
     do {
@@ -310,26 +327,166 @@ static void clfm_migrate_helper(struct CLFMap *m, struct Migration *job, lfn_eq 
         if (start > src->mask) {
             break;
         }
-        if (!clfm_migrate_range(job, start, eq)) {
-            STORE(&job->overflowed, true, RELEASE);
+        int res = clfm_migrate_range(job, start, eq);
+        if (res != M_OK) {
+            FAOR(&job->local_res, res, RELEASE);
             break;
         }
-    } while (!LOAD(&job->overflowed, ACQUIRE));
+    } while (LOAD(&job->local_res, ACQUIRE) == M_RUNNING);
 
     if (FAA(&job->threads, -1, ACQ_REL) == 1) {
-        if (LOAD(&job->overflowed, ACQUIRE)) {
-            STORE(&m->job, NULL, RELEASE);
-            qsbr_retire(job, NULL);
-            return;
+        int res = LOAD(&job->local_res, ACQUIRE);
+        if (res == M_RUNNING && job->start_epoch != LOAD(&m->epoch, ACQUIRE)) {
+            res = M_LATEWRITE;
         }
-        STORE(&m->active, dst, RELEASE);
-        qsbr_retire(src, NULL);
-        // Retire job at last since the spin wait loop needs to wait at least
-        // m->active changes if the migration is succeessed.
-        STORE(&m->job, NULL, RELEASE);
-        qsbr_retire(job, NULL);
-        return;
+        if (res != M_RUNNING) {
+            STORE(&m->job, NULL, RELEASE);
+            if (res & M_LATEWRITE) {
+                clfm_begin_migrate(m, src, dst->mask + 1);
+            } else if (res & M_OVERFLOW) {
+                clfm_begin_migrate(m, src, (dst->mask + 1) << 1);
+            }
+            STORE(&job->migrate_res, res, RELEASE);
+            qsbr_retire(dst, NULL);
+            qsbr_retire(job, NULL);
+            return res;
+        } else {
+            STORE(&m->active, dst, RELEASE);
+            qsbr_retire(src, NULL);
+            STORE(&m->job, NULL, RELEASE);
+            STORE(&job->migrate_res, M_OK, RELEASE);
+            qsbr_retire(job, NULL);
+            return M_OK;
+        }
     }
 
-    spin_wait(m, job);
+    spin = 0;
+    int res = M_RUNNING;
+    while ((res = LOAD(&job->migrate_res, ACQUIRE)) == M_RUNNING) {
+        spin_backoff(spin);
+        spin++;
+    }
+    return res;
 }
+
+struct CLFMap *clfm_new(struct CLFMap *m, size_t size) {
+    if (!m) {
+        m = calloc(1, sizeof(struct CLFMap));
+        m->is_alloc = true;
+    } else {
+        m->is_alloc = false;
+    }
+
+    m->active = clft_new(size);
+    pthread_mutex_init(&m->mlock, NULL);
+    return m;
+}
+
+void clfm_destroy(struct CLFMap *m) {
+    struct CLFTable *active = XCHG(&m->active, NULL, ACQ_REL);
+    struct Migration *job = XCHG(&m->job, NULL, ACQ_REL);
+    clft_destroy(active);
+    if (job && job->dst) {
+        clft_destroy(job->dst);
+    }
+
+    pthread_mutex_destroy(&m->mlock);
+    if (m->is_alloc) {
+        free(m);
+    }
+}
+
+struct LFNode *clfm_lookup(struct CLFMap *m, struct LFNode *key, lfn_eq eq) {
+    u64 epoch = LOAD(&m->epoch, ACQUIRE);
+    for (;;) {
+        struct CLFTable *active = LOAD(&m->active, ACQUIRE);
+        struct LFNode *node = clft_lookup(active, key, eq);
+        if (node) {
+            return node;
+        }
+        u64 epoch_after = LOAD(&m->epoch, ACQUIRE);
+        if (epoch != epoch_after) {
+            epoch = epoch_after;
+            continue;
+        }
+        return NULL;
+    }
+}
+
+struct LFNode *clfm_remove(struct CLFMap *m, struct LFNode *key, lfn_eq eq) {
+    struct LFNode *res = NULL;
+    struct CLFTable *active = NULL;
+    struct Migration *job = NULL;
+    for (;;) {
+        active = LOAD(&m->active, ACQUIRE);
+        job = LOAD(&m->job, ACQUIRE);
+        if (job) {
+            // Migration ongoing
+            clfm_migrate_helper(m, job, eq);
+            continue;
+        } else {
+            pthread_mutex_lock(&m->mlock);
+            job = LOAD(&m->job, ACQUIRE);
+            if (job) {
+                pthread_mutex_unlock(&m->mlock);
+                clfm_migrate_helper(m, job, eq);
+                continue;
+            }
+            pthread_mutex_unlock(&m->mlock);
+        }
+        break;
+    }
+
+    res = clft_remove(active, key, eq);
+
+    if (res) {
+        FAA(&m->size, -1, RELEASE);
+        FAA(&m->epoch, 1, RELEASE);
+        qsbr_quiescent();
+    }
+    return res;
+}
+
+struct LFNode *clfm_upsert(struct CLFMap *m, struct LFNode *node, lfn_eq eq) {
+    struct LFNode *res = NULL;
+    struct CLFTable *active = NULL;
+    struct Migration *job = NULL;
+RETRY:
+    for (;;) {
+        active = LOAD(&m->active, ACQUIRE);
+        job = LOAD(&m->job, ACQUIRE);
+        if (job) {
+            // Migration ongoing
+            clfm_migrate_helper(m, job, eq);
+            continue;
+        } else {
+            pthread_mutex_lock(&m->mlock);
+            job = LOAD(&m->job, ACQUIRE);
+            if (job) {
+                pthread_mutex_unlock(&m->mlock);
+                clfm_migrate_helper(m, job, eq);
+                continue;
+            }
+            pthread_mutex_unlock(&m->mlock);
+        }
+        break;
+    }
+
+    u64 overflow = 0;
+
+    res = clft_upsert(active, node, &overflow, eq);
+
+    if (!res) {
+        u64 estimate = clfm_estimate_next_size(m, active, overflow);
+        clfm_begin_migrate(m, active, estimate);
+        goto RETRY;
+    }
+    if (res == node) {
+        FAA(&m->size, 1, RELEASE);
+        FAA(&m->epoch, 1, RELEASE);
+        qsbr_quiescent();
+    }
+    return untag_ptr(res);
+}
+
+size_t clfm_size(struct CLFMap *m) { return LOAD(&m->size, ACQUIRE); }

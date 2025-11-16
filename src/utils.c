@@ -52,9 +52,9 @@ uint64_t vstr_hash_rapid(const vstr *v) { return rapidhash(v->dat, v->len); }
 void logger(FILE *f, const char *tag, const char *format, ...) {
 #ifdef LOGGING
     char buf[200];
-    time_t t = time(NULL);
-    strftime(buf, 200, "%Y-%m-%dT%H:%M:%SZ", gmtime(&(time_t) {time(NULL)}));
-    fprintf(f, "%s [%s] ", buf, tag);
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC, &tp);
+    fprintf(f, "%ld.%ld [%s] ", tp.tv_sec, tp.tv_nsec, tag);
     va_list args;
     va_start(args, format);
     vfprintf(f, format, args);

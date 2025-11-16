@@ -53,7 +53,7 @@ struct LFNode *lfm_lookup(struct LFMap *m, struct LFNode *key, lfn_eq eq);
 struct LFNode *lfm_remove(struct LFMap *m, struct LFNode *key, lfn_eq eq);
 size_t lfm_size(struct LFMap *m);
 
-struct LFMap *clfm_new(struct CLFMap *m, size_t size);
+struct CLFMap *clfm_new(struct CLFMap *m, size_t size);
 void clfm_destroy(struct CLFMap *m);
 struct LFNode *clfm_upsert(struct CLFMap *m, struct LFNode *node, lfn_eq eq);
 struct LFNode *clfm_lookup(struct CLFMap *m, struct LFNode *key, lfn_eq eq);
